@@ -83,6 +83,7 @@
 (require 'agent-shell-active-message)
 (require 'agent-shell-hermes)
 (require 'agent-shell-junie)
+(require 'agent-shell-list)
 (require 'agent-shell-kimi)
 (require 'agent-shell-kiro)
 (require 'agent-shell-mistral)
