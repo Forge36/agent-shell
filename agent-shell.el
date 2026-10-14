@@ -317,14 +317,9 @@ are applied.  Each function is called with a range alist containing:
 (defcustom agent-shell-stream-render-interval 0.1
   "Seconds to coalesce streamed message chunks before rendering them.
 
-A streamed message is rendered once per chunk, and each render re-scans
-whatever part of the body is not yet stable -- the open fenced block or
-table -- so a fast stream re-renders text the next chunk replaces.
-
-Coalescing ties the number of renders to wall-clock time rather than to
-the arrival rate of chunks.  Text still appears live, in batches no
-further apart than this.  Rendering any other fragment flushes the
-pending text first, so order is preserved.
+Batching avoids re-rendering a growing markdown body on every chunk.
+Other fragment or plain text updates flush pending chunks first,
+preserving their order.
 
 Nil renders every chunk."
   :type '(choice (number :tag "Seconds")
@@ -3412,7 +3407,7 @@ Clears STATE's `:expanded-activity-group'."
              (agent-shell--emit-event
               :event 'agent-message-chunk
               :data (list (cons :text-chunk (map-nested-elt acp-notification '(params update content text)))))
-             (agent-shell--update-fragment
+             (agent-shell--update-streamed-fragment
               :state state
               ;; Out of turn, key under a dedicated namespace so the
               ;; message forms its own fragment rather than coalescing
@@ -3424,12 +3419,6 @@ Clears STATE's `:expanded-activity-group'."
                                 (or message-id (map-elt state :chunked-group-count)))
               :body content
               :create-new new-message
-              :append t
-              :navigation 'never
-              :render-body-images t
-              ;; Batched per interval, so a fast stream doesn't re-render
-              ;; the growing body on every chunk.
-              :coalesce t
               ;; Out of turn (no prompt request in flight) lands the
               ;; message above the fresh prompt rather than after it.
               :above-last-prompt (not (agent-shell--active-requests-p state)))
@@ -5453,64 +5442,73 @@ the reported range down to the newly inserted chars."
     (add-text-properties untagged end '(field output))))
 
 (defun agent-shell--arm-stream-render-timer (state)
-  "Ensure STATE has a timer pending to flush coalesced streamed text.
-
-Armed once per batch and never pushed back, so a continuous stream still
-renders once per `agent-shell-stream-render-interval'."
+  "Schedule STATE's pending batch without postponing an existing timer."
   (unless (map-elt state :stream-render-timer)
-    (let ((buffer (map-elt state :buffer)))
-      (map-put! state :stream-render-timer
-                (run-at-time agent-shell-stream-render-interval nil
-                             (lambda ()
-                               (when (buffer-live-p buffer)
-                                 (with-current-buffer buffer
-                                   (map-put! state :stream-render-timer nil)
-                                   (agent-shell--flush-stream-render state)))))))))
+    (map-put! state :stream-render-timer
+              (run-at-time agent-shell-stream-render-interval nil
+                           (lambda ()
+                             (map-put! state :stream-render-timer nil)
+                             (when-let* ((buffer (map-elt state :buffer))
+                                         ((buffer-live-p buffer)))
+                               (with-current-buffer buffer
+                                 (agent-shell--flush-stream-render state))))))))
 
 (defun agent-shell--flush-stream-render (state)
-  "Render STATE's coalesced streamed text now, if any is pending.
-
-A no-op when nothing is pending, which is what makes it safe to call
-before rendering any other fragment."
+  "Render STATE's pending streamed text, if any."
   (when-let* ((pending (map-elt state :stream-render-pending)))
-    ;; Cleared before rendering, since the render re-enters
-    ;; `agent-shell--update-fragment' and its flush must find nothing.
+    ;; Clear before rendering, which re-enters this flush.
     (map-put! state :stream-render-pending nil)
     (when-let* ((timer (map-elt state :stream-render-timer)))
       (cancel-timer timer)
       (map-put! state :stream-render-timer nil))
-    (let ((args (copy-sequence (map-elt pending :args))))
-      (plist-put args :body (map-elt pending :body))
-      (apply #'agent-shell--update-fragment :state state args))))
+    (apply #'agent-shell--update-fragment :state state
+           (seq-mapcat (lambda (pair) (list (car pair) (cdr pair)))
+                       (map-elt pending :args)))))
 
 (cl-defun agent-shell--coalesce-stream-render (&key state key create-new args)
-  "Accumulate one streamed chunk into STATE's pending render batch.
+  "Accumulate ARGS in STATE's pending batch for fragment KEY.
 
-KEY identifies the fragment the chunk belongs to.  A chunk under a
-different KEY, or one starting a fragment (CREATE-NEW), flushes the batch
-first so fragments never interleave.  ARGS are the
-`agent-shell--update-fragment' arguments to replay on flush, with
-`:body' replaced by the accumulated text."
+ARGS is an alist of `agent-shell--update-fragment' arguments.
+A different KEY or CREATE-NEW flushes the previous batch first."
   (let ((pending (map-elt state :stream-render-pending)))
-    (when (or (null pending)
-              create-new
-              (not (equal key (map-elt pending :key))))
+    (when (and pending
+               (or create-new (not (equal key (map-elt pending :key)))))
       (agent-shell--flush-stream-render state)
       (setq pending nil))
     (if pending
-        (map-put! pending :body
-                  (concat (map-elt pending :body) (or (plist-get args :body) "")))
+        (map-put! (map-elt pending :args) :body
+                  (concat (map-nested-elt pending '(:args :body))
+                          (map-elt args :body)))
       (map-put! state :stream-render-pending
-                (list (cons :key key)
-                      (cons :body (or (plist-get args :body) ""))
-                      (cons :args args))))
+                (list (cons :key key) (cons :args args))))
     (agent-shell--arm-stream-render-timer state)))
+
+(cl-defun agent-shell--update-streamed-fragment (&key state namespace-id block-id body
+                                                      create-new above-last-prompt)
+  "Append BODY to streamed fragment BLOCK-ID in STATE.
+
+NAMESPACE-ID, CREATE-NEW, and ABOVE-LAST-PROMPT follow
+`agent-shell--update-fragment'.  Batch chunks while
+`agent-shell-stream-render-interval' is non-nil."
+  (let ((args (list (cons :namespace-id namespace-id)
+                    (cons :block-id block-id)
+                    (cons :body body)
+                    (cons :append t)
+                    (cons :create-new create-new)
+                    (cons :navigation 'never)
+                    (cons :render-body-images t)
+                    (cons :above-last-prompt above-last-prompt))))
+    (if agent-shell-stream-render-interval
+        (agent-shell--coalesce-stream-render
+         :state state :key (cons namespace-id block-id)
+         :create-new create-new :args args)
+      (apply #'agent-shell--update-fragment :state state
+             (seq-mapcat (lambda (pair) (list (car pair) (cdr pair))) args)))))
 
 (cl-defun agent-shell--update-fragment (&key state namespace-id block-id label-left label-right
                                              body append create-new navigation expanded
                                              render-body-images above-last-prompt
-                                             group-id group-label (group-expanded t)
-                                             coalesce)
+                                             group-id group-label (group-expanded t))
   "Update fragment in the shell buffer.
 
 Creates or updates existing dialog using STATE's request count as namespace
@@ -5529,37 +5527,9 @@ turn).  Ignored while `agent-shell-persistent-prompt-enabled' is on, where a
 prompt is live for the whole turn and everything renders above it.
 Programmatic fragment updates do not enter undo history.
 
-COALESCE holds this update with adjacent streamed chunks instead of
-rendering now, so a fast stream is drawn once per
-`agent-shell-stream-render-interval'.  Used by the
-`agent_message_chunk' path; every other caller renders immediately.
-
 GROUP-ID nests this block under a collapsible group header, materialized
 from GROUP-LABEL on first use (see `agent-shell-ui-make-fragment-model'),
 with GROUP-EXPANDED as the group's initial fold state."
-  ;; Stash the chunk and return, leaving the batch to
-  ;; `agent-shell--flush-stream-render'.  Guarded on COALESCE so this
-  ;; stays the single "render now" primitive for every other caller.
-  (when (and coalesce agent-shell-stream-render-interval)
-    (agent-shell--coalesce-stream-render
-     :state state
-     :key (cons namespace-id block-id)
-     :create-new create-new
-     :args (list :namespace-id namespace-id
-                 :block-id block-id
-                 :label-left label-left
-                 :label-right label-right
-                 :body body
-                 :append append
-                 :create-new create-new
-                 :navigation navigation
-                 :expanded expanded
-                 :render-body-images render-body-images
-                 :above-last-prompt above-last-prompt
-                 :group-id group-id
-                 :group-label group-label
-                 :group-expanded group-expanded))
-    (cl-return-from agent-shell--update-fragment nil))
   ;; Streamed text lands before this fragment, never after it.
   (agent-shell--flush-stream-render state)
   ;; A persistent prompt is live for the whole turn, so there is always one
@@ -5768,6 +5738,7 @@ Lands above the live prompt while
 `agent-shell-persistent-prompt-enabled' is on, the same as
 `agent-shell--update-fragment'.  Without it this appends at `point-max',
 which mid-turn is past whatever the user is typing."
+  (agent-shell--flush-stream-render state)
   (let ((ns (or namespace-id (map-elt state :request-count))))
     (when-let* (((map-elt state :buffer))
                 (viewport-buffer (agent-shell-viewport--buffer
@@ -8315,6 +8286,8 @@ pending-restore state once replay completes."
                 ('full
                  (dolist (turn prompt-turns)
                    (agent-shell--replay-turn state turn))))
+              ;; Flush while history is still narrowed above the live prompt.
+              (agent-shell--flush-stream-render state)
               ;; Close a replay that ended on a user prompt.
               ;; `agent-shell--on-notification' terminates a replayed
               ;; `user_message_chunk' only when the next notification
@@ -8346,9 +8319,7 @@ pending-restore state once replay completes."
       ;; Replayed history renders through the streaming path, which holds
       ;; back an image or list item ending a message in case more of it
       ;; follows.  No further notification is coming for it, so render it
-      ;; now, as at the end of a live turn.  Flushed first, so the scan
-      ;; sees settled bodies.
-      (agent-shell--flush-stream-render state)
+      ;; now, as at the end of a live turn.
       (agent-shell--render-deferred-markup)
       ;; Point followed the narrowed history insertions up above the live
       ;; prompt.  Return it to the input area so the cursor lands where the

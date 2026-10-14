@@ -736,7 +736,8 @@ Drives an ACP `session/update' notification through
 `agent-shell--on-notification' and asserts the body handed to the renderer
 is what `agent-shell--content-block-to-markdown' produces for the content
 block -- covering the dispatch path, not just the helper in isolation."
-  (let ((state (list (cons :chunked-group-count 0)
+  (let ((agent-shell-stream-render-interval nil)
+        (state (list (cons :chunked-group-count 0)
                      ;; Pre-set so the header/end-of-prompt branches are
                      ;; skipped; the test only exercises content rendering.
                      (cons :last-entry-type "agent_message_chunk")
@@ -775,101 +776,134 @@ block -- covering the dispatch path, not just the helper in isolation."
       (should (equal rendered "\n\n![image](file:///tmp/x.png)\n\n")))))
 
 (ert-deftest agent-shell--stream-render-coalesces-chunks-test ()
-  "Render consecutive streamed chunks once, with their text concatenated.
-
-A fast stream must not re-render the growing message body per chunk
-(see `agent-shell-stream-render-interval'): several chunks accumulate
-into one pending batch that renders a single time on flush."
+  "Render consecutive chunks once, without postponing the batch timer."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval 30) ; long: the timer never fires
+    (let ((agent-shell-stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
-          (rendered '()))
+          (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
-                 (lambda (&rest args) (push (plist-get args :body) rendered))))
-        (agent-shell--coalesce-stream-render
-         :state state :key (cons nil "1-agent_message_chunk") :create-new nil
-         :args (list :block-id "1-agent_message_chunk" :body "hello " :append t))
-        (agent-shell--coalesce-stream-render
-         :state state :key (cons nil "1-agent_message_chunk") :create-new nil
-         :args (list :block-id "1-agent_message_chunk" :body "world" :append t))
-        ;; Nothing drawn while the batch is still open.
+                 (lambda (&rest args) (push args rendered))))
+        (agent-shell--update-streamed-fragment
+         :state state :block-id "a" :body "hello " :create-new t)
+        (let ((timer (map-elt state :stream-render-timer)))
+          (agent-shell--update-streamed-fragment
+           :state state :block-id "a" :body "world")
+          (should (eq timer (map-elt state :stream-render-timer))))
         (should-not rendered)
         (agent-shell--flush-stream-render state)
-        ;; One render, carrying every chunk's text in arrival order.
-        (should (equal rendered '("hello world")))))))
+        (should (= (length rendered) 1))
+        (should (equal (plist-get (car rendered) :body) "hello world"))
+        (should (plist-get (car rendered) :create-new))
+        (should (plist-get (car rendered) :append))
+        (should-not (map-elt state :stream-render-timer))))))
 
 (ert-deftest agent-shell--stream-render-flushes-on-fragment-change-test ()
-  "A chunk under a different KEY flushes the pending batch first.
-
-Distinct fragments must never interleave: the earlier batch lands before
-the new one starts accumulating, so the buffer reads in arrival order."
+  "Flush the previous batch when the fragment changes."
   (with-temp-buffer
     (let ((agent-shell-stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
-          (rendered '()))
+          (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
                  (lambda (&rest args) (push (plist-get args :body) rendered))))
-        (agent-shell--coalesce-stream-render
-         :state state :key 'a :create-new nil :args (list :body "one" :append t))
-        (agent-shell--coalesce-stream-render
-         :state state :key 'b :create-new nil :args (list :body "two" :append t))
-        ;; Switching fragments flushed "one" before "two" accumulated.
+        (agent-shell--update-streamed-fragment :state state :block-id "a" :body "one")
+        (agent-shell--update-streamed-fragment :state state :block-id "b" :body "two")
         (should (equal rendered '("one")))
         (agent-shell--flush-stream-render state)
-        (should (equal rendered '("two" "one")))))))
+        (should (equal (nreverse rendered) '("one" "two")))))))
 
 (ert-deftest agent-shell--stream-render-flushes-on-create-new-test ()
-  "A CREATE-NEW chunk flushes the pending batch and starts a fresh one.
-
-A new message must not coalesce into the previous one."
+  "A new message must not coalesce into the previous one."
   (with-temp-buffer
     (let ((agent-shell-stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
-          (rendered '()))
+          (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
                  (lambda (&rest args) (push (plist-get args :body) rendered))))
-        (agent-shell--coalesce-stream-render
-         :state state :key 'a :create-new nil :args (list :body "old" :append t))
-        (agent-shell--coalesce-stream-render
-         :state state :key 'a :create-new t :args (list :body "new" :append t))
+        (agent-shell--update-streamed-fragment :state state :block-id "a" :body "old")
+        (agent-shell--update-streamed-fragment
+         :state state :block-id "a" :body "new" :create-new t)
         (should (equal rendered '("old")))
         (agent-shell--flush-stream-render state)
-        (should (equal rendered '("new" "old")))))))
+        (should (equal (nreverse rendered) '("old" "new")))))))
 
 (ert-deftest agent-shell--stream-render-timer-flushes-batch-test ()
-  "The coalescing timer draws the batch without further chunks.
-
-A message that ends mid-stream still renders: the timer armed on the
-first chunk fires once the interval elapses.  Polled rather than slept
-on, so the test costs the interval and not a fixed wait."
+  "Render a pending batch without waiting for another chunk."
   (with-temp-buffer
     (let ((agent-shell-stream-render-interval 0.01)
           (state (agent-shell--make-state :buffer (current-buffer)))
-          (rendered '()))
+          (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
                  (lambda (&rest args) (push (plist-get args :body) rendered))))
-        (agent-shell--coalesce-stream-render
-         :state state :key 'a :create-new nil :args (list :body "tail" :append t))
+        (agent-shell--update-streamed-fragment :state state :block-id "a" :body "tail")
         (should-not rendered)
         (with-timeout (2 (ert-fail "Timer never flushed the batch"))
           (while (not rendered)
             (accept-process-output nil 0.005)))
         (should (equal rendered '("tail")))
-        ;; The timer cleared its own bookkeeping, so nothing lingers.
         (should-not (map-elt state :stream-render-timer))
         (should-not (map-elt state :stream-render-pending))))))
 
 (ert-deftest agent-shell--stream-render-flush-without-pending-is-noop-test ()
-  "Flushing with nothing pending renders nothing.
-
-This is what makes it safe to call before every other fragment render."
+  "Flushing with nothing pending renders nothing."
   (with-temp-buffer
     (let ((state (agent-shell--make-state :buffer (current-buffer)))
-          (rendered '()))
+          (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
                  (lambda (&rest args) (push args rendered))))
         (agent-shell--flush-stream-render state)
         (should-not rendered)))))
+
+(ert-deftest agent-shell--stream-render-disabled-test ()
+  "A nil interval renders every chunk immediately."
+  (with-temp-buffer
+    (let ((agent-shell-stream-render-interval nil)
+          (state (agent-shell--make-state :buffer (current-buffer)))
+          (rendered nil))
+      (cl-letf (((symbol-function 'agent-shell--update-fragment)
+                 (lambda (&rest args) (push (plist-get args :body) rendered))))
+        (agent-shell--update-streamed-fragment :state state :block-id "a" :body "one")
+        (agent-shell--update-streamed-fragment :state state :block-id "a" :body "two")
+        (should (equal (nreverse rendered) '("one" "two")))
+        (should-not (map-elt state :stream-render-timer))
+        (should-not (map-elt state :stream-render-pending))))))
+
+(ert-deftest agent-shell--stream-render-restore-preserves-turn-order-test ()
+  "Restored answers must precede the next user prompt."
+  (with-temp-buffer
+    (comint-mode)
+    (let ((agent-shell-stream-render-interval 30)
+          (agent-shell-persistent-prompt-enabled nil)
+          (state (agent-shell--make-state
+                  :buffer (current-buffer)
+                  :agent-config '((:shell-prompt . "Agent> "))))
+          (rendered nil))
+      (map-put! state :pending-restore (agent-shell--make-pending-restore))
+      (dolist (entry '(("user_message_chunk" . "first prompt")
+                       ("agent_message_chunk" . "first answer")
+                       ("user_message_chunk" . "second prompt")
+                       ("agent_message_chunk" . "second answer")))
+        (agent-shell--append-restore-notification
+         state (agent-shell-tests--make-session-update (car entry) (cdr entry))))
+      ;; Keep dispatch and both update paths real; record only the UI writes.
+      (cl-letf (((symbol-function 'agent-shell--create-bootstrapping-placeholders) #'ignore)
+                ((symbol-function 'agent-shell--append-transcript) #'ignore)
+                ((symbol-function 'agent-shell--emit-event) #'ignore)
+                ((symbol-function 'agent-shell--render-deferred-markup) #'ignore)
+                ((symbol-function 'agent-shell--reset-undo-history) #'ignore)
+                ((symbol-function 'shell-maker-insert-end-of-prompt-marker) #'ignore)
+                ((symbol-function 'agent-shell--effective-restore-verbosity) (lambda (_) 'full))
+                ((symbol-function 'agent-shell-viewport--buffer) (lambda (&rest _) nil))
+                ((symbol-function 'derived-mode-p) (lambda (&rest _) t))
+                ((symbol-function 'agent-shell-ui-update-text)
+                 (lambda (&rest args) (push (plist-get args :text) rendered)))
+                ((symbol-function 'agent-shell-ui-update-fragment)
+                 (lambda (model &rest _) (push (map-elt model :body) rendered) nil)))
+        (agent-shell--render-pending-restore state)
+        (should (equal (nreverse rendered)
+                       '("Agent> first prompt" "first answer"
+                         "Agent> second prompt" "second answer")))
+        (should-not (map-elt state :stream-render-pending))
+        (should-not (map-elt state :stream-render-timer))))))
 
 (ert-deftest agent-shell--on-notification-session-info-update-test ()
   "Test `session_info_update' updates the session title.
@@ -6506,7 +6540,8 @@ CHUNKS is a list of (MESSAGE-ID . TEXT) pairs (MESSAGE-ID may be nil).
 Between successive chunks `:last-entry-type' is left as-is, reproducing an
 interleaved entry that failed to advance it.  Returns a list of
 \(BLOCK-ID . CREATE-NEW) as passed to `agent-shell--update-fragment'."
-  (let ((state (list (cons :last-entry-type nil)
+  (let ((agent-shell-stream-render-interval nil)
+        (state (list (cons :last-entry-type nil)
                      (cons :last-agent-message-id nil)
                      (cons :chunked-group-count 0)
                      (cons :active-requests t)
@@ -6663,6 +6698,7 @@ in flight shows its members."
   (let ((collapsed '())
         (expanded '())
         (agent-shell-activity-group-expand-by-default 'latest)
+        (agent-shell-stream-render-interval nil)
         (state (list (cons :tool-calls nil)
                      (cons :last-entry-type nil)
                      (cons :last-agent-message-id nil)
