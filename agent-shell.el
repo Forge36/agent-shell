@@ -314,17 +314,14 @@ are applied.  Each function is called with a range alist containing:
   :type 'boolean
   :group 'agent-shell)
 
-(defcustom agent-shell-stream-render-interval 0.1
+(defvar agent-shell--stream-render-interval 0.05
   "Seconds to coalesce streamed message chunks before rendering them.
 
 Batching avoids re-rendering a growing markdown body on every chunk.
 Other fragment or plain text updates flush pending chunks first,
 preserving their order.
 
-Nil renders every chunk."
-  :type '(choice (number :tag "Seconds")
-                 (const :tag "Render every chunk" nil))
-  :group 'agent-shell)
+Nil renders every chunk.")
 
 (defcustom agent-shell-markdown-render-function
   #'agent-shell-markdown-replace-markup
@@ -4621,10 +4618,7 @@ side)."
 For example, shut down ACP client."
   (when (derived-mode-p 'agent-shell-mode)
     (agent-shell--cancel-idle-timer)
-    (when-let* ((timer (map-elt (agent-shell--state) :stream-render-timer)))
-      (cancel-timer timer)
-      (map-put! (agent-shell--state) :stream-render-timer nil)
-      (map-put! (agent-shell--state) :stream-render-pending nil))
+    (agent-shell--cancel-stream-render-timer (agent-shell--state))
     (agent-shell--emit-event :event 'clean-up)
     (agent-shell--shutdown)
     ;; Kill any open diff buffers associated with tool calls.
@@ -5455,7 +5449,7 @@ the reported range down to the newly inserted chars."
   "Schedule STATE's pending batch without postponing an existing timer."
   (unless (map-elt state :stream-render-timer)
     (map-put! state :stream-render-timer
-              (run-at-time agent-shell-stream-render-interval nil
+              (run-at-time agent-shell--stream-render-interval nil
                            (lambda ()
                              (map-put! state :stream-render-timer nil)
                              (when-let* ((buffer (map-elt state :buffer))
@@ -5463,57 +5457,67 @@ the reported range down to the newly inserted chars."
                                (with-current-buffer buffer
                                  (agent-shell--flush-stream-render state))))))))
 
+(defun agent-shell--cancel-stream-render-timer (state)
+  "Cancel STATE's pending stream render timer, if any."
+  (when-let* ((timer (map-elt state :stream-render-timer)))
+    (cancel-timer timer)
+    (map-put! state :stream-render-timer nil)))
+
+(defun agent-shell--render-streamed-chunk (state chunk)
+  "Append CHUNK to its streamed fragment in STATE.
+
+CHUNK is an alist like:
+
+  ((:namespace-id . \"1\")
+   (:block-id . \"1-agent_message_chunk\")
+   (:body . \"Hello world\")
+   (:create-new . t)
+   (:above-last-prompt . nil))"
+  (agent-shell--update-fragment
+   :state state
+   :namespace-id (map-elt chunk :namespace-id)
+   :block-id (map-elt chunk :block-id)
+   :body (map-elt chunk :body)
+   :append t
+   :create-new (map-elt chunk :create-new)
+   :navigation 'never
+   :render-body-images t
+   :above-last-prompt (map-elt chunk :above-last-prompt)))
+
 (defun agent-shell--flush-stream-render (state)
   "Render STATE's pending streamed text, if any."
   (when-let* ((pending (map-elt state :stream-render-pending)))
     ;; Clear before rendering, which re-enters this flush.
     (map-put! state :stream-render-pending nil)
-    (when-let* ((timer (map-elt state :stream-render-timer)))
-      (cancel-timer timer)
-      (map-put! state :stream-render-timer nil))
-    (apply #'agent-shell--update-fragment :state state
-           (seq-mapcat (lambda (pair) (list (car pair) (cdr pair)))
-                       (map-elt pending :args)))))
-
-(cl-defun agent-shell--coalesce-stream-render (&key state key create-new args)
-  "Accumulate ARGS in STATE's pending batch for fragment KEY.
-
-ARGS is an alist of `agent-shell--update-fragment' arguments.
-A different KEY or CREATE-NEW flushes the previous batch first."
-  (let ((pending (map-elt state :stream-render-pending)))
-    (when (and pending
-               (or create-new (not (equal key (map-elt pending :key)))))
-      (agent-shell--flush-stream-render state)
-      (setq pending nil))
-    (if pending
-        (map-put! (map-elt pending :args) :body
-                  (concat (map-nested-elt pending '(:args :body))
-                          (map-elt args :body)))
-      (map-put! state :stream-render-pending
-                (list (cons :key key) (cons :args args))))
-    (agent-shell--arm-stream-render-timer state)))
+    (agent-shell--cancel-stream-render-timer state)
+    (agent-shell--render-streamed-chunk state pending)))
 
 (cl-defun agent-shell--update-streamed-fragment (&key state namespace-id block-id body
                                                       create-new above-last-prompt)
   "Append BODY to streamed fragment BLOCK-ID in STATE.
 
 NAMESPACE-ID, CREATE-NEW, and ABOVE-LAST-PROMPT follow
-`agent-shell--update-fragment'.  Batch chunks while
-`agent-shell-stream-render-interval' is non-nil."
-  (let ((args (list (cons :namespace-id namespace-id)
-                    (cons :block-id block-id)
-                    (cons :body body)
-                    (cons :append t)
-                    (cons :create-new create-new)
-                    (cons :navigation 'never)
-                    (cons :render-body-images t)
-                    (cons :above-last-prompt above-last-prompt))))
-    (if agent-shell-stream-render-interval
-        (agent-shell--coalesce-stream-render
-         :state state :key (cons namespace-id block-id)
-         :create-new create-new :args args)
-      (apply #'agent-shell--update-fragment :state state
-             (seq-mapcat (lambda (pair) (list (car pair) (cdr pair))) args)))))
+`agent-shell--update-fragment'.  Chunks for the same fragment are
+batched while `agent-shell--stream-render-interval' is non-nil.  A
+different fragment or CREATE-NEW flushes the previous batch first."
+  (let ((chunk (list (cons :namespace-id namespace-id)
+                     (cons :block-id block-id)
+                     (cons :body body)
+                     (cons :create-new create-new)
+                     (cons :above-last-prompt above-last-prompt)))
+        (pending (map-elt state :stream-render-pending)))
+    (cond
+     ((not agent-shell--stream-render-interval)
+      (agent-shell--render-streamed-chunk state chunk))
+     ((and pending
+           (not create-new)
+           (equal (map-elt pending :namespace-id) namespace-id)
+           (equal (map-elt pending :block-id) block-id))
+      (map-put! pending :body (concat (map-elt pending :body) body)))
+     (t
+      (agent-shell--flush-stream-render state)
+      (map-put! state :stream-render-pending chunk)
+      (agent-shell--arm-stream-render-timer state)))))
 
 (cl-defun agent-shell--update-fragment (&key state namespace-id block-id label-left label-right
                                              body append create-new navigation expanded

@@ -736,7 +736,7 @@ Drives an ACP `session/update' notification through
 `agent-shell--on-notification' and asserts the body handed to the renderer
 is what `agent-shell--content-block-to-markdown' produces for the content
 block -- covering the dispatch path, not just the helper in isolation."
-  (let ((agent-shell-stream-render-interval nil)
+  (let ((agent-shell--stream-render-interval nil)
         (state (list (cons :chunked-group-count 0)
                      ;; Pre-set so the header/end-of-prompt branches are
                      ;; skipped; the test only exercises content rendering.
@@ -778,7 +778,7 @@ block -- covering the dispatch path, not just the helper in isolation."
 (ert-deftest agent-shell--stream-render-coalesces-chunks-test ()
   "Render consecutive chunks once, without postponing the batch timer."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval 30)
+    (let ((agent-shell--stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
           (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
@@ -800,7 +800,7 @@ block -- covering the dispatch path, not just the helper in isolation."
 (ert-deftest agent-shell--stream-render-flushes-on-fragment-change-test ()
   "Flush the previous batch when the fragment changes."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval 30)
+    (let ((agent-shell--stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
           (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
@@ -814,7 +814,7 @@ block -- covering the dispatch path, not just the helper in isolation."
 (ert-deftest agent-shell--stream-render-flushes-on-create-new-test ()
   "A new message must not coalesce into the previous one."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval 30)
+    (let ((agent-shell--stream-render-interval 30)
           (state (agent-shell--make-state :buffer (current-buffer)))
           (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
@@ -829,7 +829,7 @@ block -- covering the dispatch path, not just the helper in isolation."
 (ert-deftest agent-shell--stream-render-timer-flushes-batch-test ()
   "Render a pending batch without waiting for another chunk."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval 0.01)
+    (let ((agent-shell--stream-render-interval 0.01)
           (state (agent-shell--make-state :buffer (current-buffer)))
           (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
@@ -856,7 +856,7 @@ block -- covering the dispatch path, not just the helper in isolation."
 (ert-deftest agent-shell--stream-render-disabled-test ()
   "A nil interval renders every chunk immediately."
   (with-temp-buffer
-    (let ((agent-shell-stream-render-interval nil)
+    (let ((agent-shell--stream-render-interval nil)
           (state (agent-shell--make-state :buffer (current-buffer)))
           (rendered nil))
       (cl-letf (((symbol-function 'agent-shell--update-fragment)
@@ -871,7 +871,7 @@ block -- covering the dispatch path, not just the helper in isolation."
   "Restored answers must precede the next user prompt."
   (with-temp-buffer
     (comint-mode)
-    (let ((agent-shell-stream-render-interval 30)
+    (let ((agent-shell--stream-render-interval 30)
           (agent-shell-persistent-prompt-enabled nil)
           (state (agent-shell--make-state
                   :buffer (current-buffer)
@@ -6540,7 +6540,7 @@ CHUNKS is a list of (MESSAGE-ID . TEXT) pairs (MESSAGE-ID may be nil).
 Between successive chunks `:last-entry-type' is left as-is, reproducing an
 interleaved entry that failed to advance it.  Returns a list of
 \(BLOCK-ID . CREATE-NEW) as passed to `agent-shell--update-fragment'."
-  (let ((agent-shell-stream-render-interval nil)
+  (let ((agent-shell--stream-render-interval nil)
         (state (list (cons :last-entry-type nil)
                      (cons :last-agent-message-id nil)
                      (cons :chunked-group-count 0)
@@ -6698,7 +6698,7 @@ in flight shows its members."
   (let ((collapsed '())
         (expanded '())
         (agent-shell-activity-group-expand-by-default 'latest)
-        (agent-shell-stream-render-interval nil)
+        (agent-shell--stream-render-interval nil)
         (state (list (cons :tool-calls nil)
                      (cons :last-entry-type nil)
                      (cons :last-agent-message-id nil)
