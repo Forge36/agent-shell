@@ -314,6 +314,18 @@ are applied.  Each function is called with a range alist containing:
   :type 'boolean
   :group 'agent-shell)
 
+(defcustom agent-shell-stream-render-interval 0.1
+  "Seconds to coalesce streamed message chunks before rendering them.
+
+Batching avoids re-rendering a growing markdown body on every chunk.
+Other fragment or plain text updates flush pending chunks first,
+preserving their order.
+
+Nil renders every chunk."
+  :type '(choice (number :tag "Seconds")
+                 (const :tag "Render every chunk" nil))
+  :group 'agent-shell)
+
 (defcustom agent-shell-markdown-render-function
   #'agent-shell-markdown-replace-markup
   "Function called to render markdown in the current narrowed buffer.
@@ -1299,6 +1311,8 @@ OUTGOING-REQUEST-DECORATOR (passed through to `acp-make-client')."
         (cons :prompt-capabilities nil)
         (cons :event-subscriptions nil)
         (cons :idle-timer nil)
+        (cons :stream-render-pending nil)
+        (cons :stream-render-timer nil)
         (cons :sleep-token nil)
         (cons :active-requests nil)
         (cons :pending-prompts nil)
@@ -3393,7 +3407,7 @@ Clears STATE's `:expanded-activity-group'."
              (agent-shell--emit-event
               :event 'agent-message-chunk
               :data (list (cons :text-chunk (map-nested-elt acp-notification '(params update content text)))))
-             (agent-shell--update-fragment
+             (agent-shell--update-streamed-fragment
               :state state
               ;; Out of turn, key under a dedicated namespace so the
               ;; message forms its own fragment rather than coalescing
@@ -3405,9 +3419,6 @@ Clears STATE's `:expanded-activity-group'."
                                 (or message-id (map-elt state :chunked-group-count)))
               :body content
               :create-new new-message
-              :append t
-              :navigation 'never
-              :render-body-images t
               ;; Out of turn (no prompt request in flight) lands the
               ;; message above the fresh prompt rather than after it.
               :above-last-prompt (not (agent-shell--active-requests-p state)))
@@ -4610,6 +4621,10 @@ side)."
 For example, shut down ACP client."
   (when (derived-mode-p 'agent-shell-mode)
     (agent-shell--cancel-idle-timer)
+    (when-let* ((timer (map-elt (agent-shell--state) :stream-render-timer)))
+      (cancel-timer timer)
+      (map-put! (agent-shell--state) :stream-render-timer nil)
+      (map-put! (agent-shell--state) :stream-render-pending nil))
     (agent-shell--emit-event :event 'clean-up)
     (agent-shell--shutdown)
     ;; Kill any open diff buffers associated with tool calls.
@@ -5436,6 +5451,70 @@ the reported range down to the newly inserted chars."
   (when-let* ((untagged (text-property-not-all start end 'field 'output)))
     (add-text-properties untagged end '(field output))))
 
+(defun agent-shell--arm-stream-render-timer (state)
+  "Schedule STATE's pending batch without postponing an existing timer."
+  (unless (map-elt state :stream-render-timer)
+    (map-put! state :stream-render-timer
+              (run-at-time agent-shell-stream-render-interval nil
+                           (lambda ()
+                             (map-put! state :stream-render-timer nil)
+                             (when-let* ((buffer (map-elt state :buffer))
+                                         ((buffer-live-p buffer)))
+                               (with-current-buffer buffer
+                                 (agent-shell--flush-stream-render state))))))))
+
+(defun agent-shell--flush-stream-render (state)
+  "Render STATE's pending streamed text, if any."
+  (when-let* ((pending (map-elt state :stream-render-pending)))
+    ;; Clear before rendering, which re-enters this flush.
+    (map-put! state :stream-render-pending nil)
+    (when-let* ((timer (map-elt state :stream-render-timer)))
+      (cancel-timer timer)
+      (map-put! state :stream-render-timer nil))
+    (apply #'agent-shell--update-fragment :state state
+           (seq-mapcat (lambda (pair) (list (car pair) (cdr pair)))
+                       (map-elt pending :args)))))
+
+(cl-defun agent-shell--coalesce-stream-render (&key state key create-new args)
+  "Accumulate ARGS in STATE's pending batch for fragment KEY.
+
+ARGS is an alist of `agent-shell--update-fragment' arguments.
+A different KEY or CREATE-NEW flushes the previous batch first."
+  (let ((pending (map-elt state :stream-render-pending)))
+    (when (and pending
+               (or create-new (not (equal key (map-elt pending :key)))))
+      (agent-shell--flush-stream-render state)
+      (setq pending nil))
+    (if pending
+        (map-put! (map-elt pending :args) :body
+                  (concat (map-nested-elt pending '(:args :body))
+                          (map-elt args :body)))
+      (map-put! state :stream-render-pending
+                (list (cons :key key) (cons :args args))))
+    (agent-shell--arm-stream-render-timer state)))
+
+(cl-defun agent-shell--update-streamed-fragment (&key state namespace-id block-id body
+                                                      create-new above-last-prompt)
+  "Append BODY to streamed fragment BLOCK-ID in STATE.
+
+NAMESPACE-ID, CREATE-NEW, and ABOVE-LAST-PROMPT follow
+`agent-shell--update-fragment'.  Batch chunks while
+`agent-shell-stream-render-interval' is non-nil."
+  (let ((args (list (cons :namespace-id namespace-id)
+                    (cons :block-id block-id)
+                    (cons :body body)
+                    (cons :append t)
+                    (cons :create-new create-new)
+                    (cons :navigation 'never)
+                    (cons :render-body-images t)
+                    (cons :above-last-prompt above-last-prompt))))
+    (if agent-shell-stream-render-interval
+        (agent-shell--coalesce-stream-render
+         :state state :key (cons namespace-id block-id)
+         :create-new create-new :args args)
+      (apply #'agent-shell--update-fragment :state state
+             (seq-mapcat (lambda (pair) (list (car pair) (cdr pair))) args)))))
+
 (cl-defun agent-shell--update-fragment (&key state namespace-id block-id label-left label-right
                                              body append create-new navigation expanded
                                              render-body-images above-last-prompt
@@ -5461,6 +5540,8 @@ Programmatic fragment updates do not enter undo history.
 GROUP-ID nests this block under a collapsible group header, materialized
 from GROUP-LABEL on first use (see `agent-shell-ui-make-fragment-model'),
 with GROUP-EXPANDED as the group's initial fold state."
+  ;; Streamed text lands before this fragment, never after it.
+  (agent-shell--flush-stream-render state)
   ;; A persistent prompt is live for the whole turn, so there is always one
   ;; to render above and every write goes there.  Callers decide
   ;; ABOVE-LAST-PROMPT from whether the shell is busy, which only tells
@@ -5667,6 +5748,7 @@ Lands above the live prompt while
 `agent-shell-persistent-prompt-enabled' is on, the same as
 `agent-shell--update-fragment'.  Without it this appends at `point-max',
 which mid-turn is past whatever the user is typing."
+  (agent-shell--flush-stream-render state)
   (let ((ns (or namespace-id (map-elt state :request-count))))
     (when-let* (((map-elt state :buffer))
                 (viewport-buffer (agent-shell-viewport--buffer
@@ -8214,6 +8296,8 @@ pending-restore state once replay completes."
                 ('full
                  (dolist (turn prompt-turns)
                    (agent-shell--replay-turn state turn))))
+              ;; Flush while history is still narrowed above the live prompt.
+              (agent-shell--flush-stream-render state)
               ;; Close a replay that ended on a user prompt.
               ;; `agent-shell--on-notification' terminates a replayed
               ;; `user_message_chunk' only when the next notification
@@ -9151,6 +9235,8 @@ reads the buffer's prompt capabilities."
                :prompt content-blocks)
      :buffer (current-buffer)
      :on-success (lambda (acp-response)
+                   ;; Before the turn-end footer scans the fragment bodies.
+                   (agent-shell--flush-stream-render (agent-shell--state))
                    (agent-shell--separate-transcript-after-agent-message
                     :last-entry-type (map-elt (agent-shell--state) :last-entry-type)
                     :file-path agent-shell--transcript-file)
