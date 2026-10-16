@@ -4862,7 +4862,7 @@ displayed in no window is measured against the selected frame instead.
   (when-let* ((text)
               (available (- (window-body-width
                              (or (and buffer (get-buffer-window buffer t))
-                                 (frame-root-window)))
+                                 (frame-first-window)))
                             (or reserved 0))))
     (if (> (string-width text) available)
         (truncate-string-to-width text (max available 1) nil nil "…")
