@@ -8151,6 +8151,20 @@ command would otherwise flash as a block before the description lands."
                               "t1")
                              :title))))))
 
+(ert-deftest agent-shell--fit-to-window-line-undisplayed-on-split-frame-test ()
+  "A buffer shown in no window is measured against a live window.
+
+On a split frame, the root window is an internal window, which has no
+body to measure."
+  (save-window-excursion
+    (delete-other-windows)
+    (split-window-right)
+    (with-temp-buffer
+      (should-not (get-buffer-window (current-buffer) t))
+      (should (equal "cd /tmp"
+                     (agent-shell--fit-to-window-line
+                      :text "cd /tmp" :buffer (current-buffer)))))))
+
 (ert-deftest agent-shell--tag-untagged-output-tags-same-chars-test ()
   "Tagging only the untagged tail covers what a whole-range tag would."
   (with-temp-buffer
