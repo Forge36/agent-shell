@@ -8108,6 +8108,26 @@ the global hook value must stay quiet."
                     0 'font-lock-face
                     (map-elt (agent-shell-make-tool-call-label state "t1") :title))))))
 
+(ert-deftest agent-shell-make-tool-call-label-dims-read-line-range-test ()
+  "A read's trailing line range renders as an annotation beside its path."
+  (let ((title (lambda (kind text)
+                 (map-elt (agent-shell-make-tool-call-label
+                           `((:tool-calls . (("t1" . ((:kind . ,kind)
+                                                      (:status . "completed")
+                                                      (:title . ,text))))))
+                           "t1")
+                          :title))))
+    (let ((label (funcall title "read" "file.el (1455 - 1476)")))
+      (should (equal 'default (get-text-property 0 'font-lock-face label)))
+      (should (equal 'agent-shell-section-annotation
+                     (get-text-property (string-search "(" label)
+                                        'font-lock-face label))))
+    ;; Other kinds keep their parens plain.
+    (let ((label (funcall title "edit" "file.el (1455 - 1476)")))
+      (should (equal 'default
+                     (get-text-property (string-search "(" label)
+                                        'font-lock-face label))))))
+
 (ert-deftest agent-shell-make-tool-call-label-multiline-command-test ()
   "A multiline command reads as truncated, so its title ends in an ellipsis.
 

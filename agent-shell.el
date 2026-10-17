@@ -4868,6 +4868,21 @@ displayed in no window is measured against the selected frame instead.
         (truncate-string-to-width text (max available 1) nil nil "…")
       text)))
 
+(cl-defun agent-shell--propertize-tool-call-title (&key title kind)
+  "Return TITLE faced as `default', with a read's line range dimmed.
+
+KIND is the tool call kind.  When KIND is \"read\" and TITLE ends in a
+line range, the range is faced with `agent-shell-section-annotation'.
+
+For example, the \"(10 - 20)\" in \"file.el (10 - 20)\" is dimmed."
+  (let ((title (propertize title 'font-lock-face 'default)))
+    (when (and (equal kind "read")
+               (string-match "([0-9]+ *- *[0-9]+)\\s-*\\'" title))
+      (put-text-property (match-beginning 0) (match-end 0)
+                         'font-lock-face 'agent-shell-section-annotation
+                         title))
+    title))
+
 (defun agent-shell-make-tool-call-label (state tool-call-id)
   "Create tool call label from STATE using TOOL-CALL-ID.
 
@@ -4914,11 +4929,13 @@ Returns propertized labels in :status and :title propertized."
                               (not (equal (string-remove-prefix "`" (string-remove-suffix "`" (string-trim title)))
                                           (string-remove-prefix "`" (string-remove-suffix "`" (string-trim description))))))
                          (concat
-                          (propertize title 'font-lock-face 'default)
+                          (agent-shell--propertize-tool-call-title
+                           :title title :kind (map-elt tool-call :kind))
                           " "
                           (propertize description 'font-lock-face 'agent-shell-section-annotation)))
                         (title
-                         (propertize title 'font-lock-face 'default))
+                         (agent-shell--propertize-tool-call-title
+                          :title title :kind (map-elt tool-call :kind)))
                         (description
                          (propertize description 'font-lock-face 'default)))))
       `((:status . ,status)
