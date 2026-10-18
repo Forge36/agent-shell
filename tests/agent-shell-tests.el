@@ -7466,6 +7466,25 @@ into, so busy state alone no longer sends the region to the queue."
             :busy t)
            '(:asked-minibuffer nil :prompt-input "context from source"))))
 
+(ert-deftest agent-shell-quote-region-marks-reading-place-test ()
+  "Quoting leaves the mark where point was, so popping it resumes reading."
+  (should (equal
+           (agent-shell-tests--with-persistent-prompt-shell
+            (lambda ()
+              (goto-char (point-min))
+              (search-forward "list the")
+              (let ((reading-place (point)))
+                (cl-letf (((symbol-function 'agent-shell--get-region)
+                           (lambda (&rest _) '((:content . "list the"))))
+                          ((symbol-function 'agent-shell--typing-at-prompt-p) #'ignore)
+                          ((symbol-function 'shell-maker-point-at-last-prompt-p) #'ignore)
+                          ((symbol-function 'region-active-p) (lambda () t)))
+                  (agent-shell-quote-region))
+                (list :at-prompt (= (point) (point-max))
+                      :mark-at-reading-place (eql (mark t) reading-place))))
+            :busy t)
+           '(:at-prompt t :mark-at-reading-place t))))
+
 (ert-deftest agent-shell-quote-region-waits-for-prompt-test ()
   "Quoting before the first prompt waits for it, like other inserts.
 

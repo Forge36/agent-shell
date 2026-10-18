@@ -11810,7 +11810,8 @@ the originating key) so the user can type `r' as plain input.
 
 Otherwise, when a region is active, wrap it as a Markdown block quote
 and insert it at the live prompt, point left below it, ready to type.
-Busy or not makes no difference: with
+The mark is left where point was, so \\[universal-argument] \\[set-mark-command]
+returns to where reading stopped.  Busy or not makes no difference: with
 `agent-shell-persistent-prompt-enabled' there is a prompt to quote into
 for the whole turn.
 
@@ -11833,6 +11834,7 @@ with the block quote, when there is no prompt to insert into."
       (if (not (agent-shell--can-insert-into-prompt-p))
           (agent-shell-prompt-queue
            (agent-shell--prompt-queue-read :initial (concat "\n\n" quoted "\n\n")))
+        (push-mark nil t)
         (agent-shell-insert :text (concat quoted "\n\n")
                             :shell-buffer (current-buffer)
                             :no-focus t)
