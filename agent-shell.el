@@ -109,6 +109,8 @@
 (require 'svg nil :noerror)
 (require 'transient)
 
+(defvar shell-maker-inhibit-auto-scroll)
+
 ;; Optional flycheck integration (used in agent-shell--get-flycheck-error-context)
 (declare-function flycheck-overlay-errors-at "flycheck" (pos))
 (declare-function flycheck-error-pos "flycheck" (err))
@@ -8269,6 +8271,8 @@ pending-restore state once replay completes."
                 ;; A replay renders history the user never typed, so keep all of
                 ;; it out of undo history (see `agent-shell--reset-undo-history').
                 (let ((buffer-undo-list t)
+                      (shell-maker-inhibit-auto-scroll t)
+                      (gc-cons-threshold (max gc-cons-threshold (* 16 1024 1024)))
                       (prompt-start (and comint-last-prompt
                                          (marker-position (car comint-last-prompt))
                                          (agent-shell--live-input-prompt-p comint-last-prompt)

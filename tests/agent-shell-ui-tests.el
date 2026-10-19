@@ -5,6 +5,25 @@
 
 ;;; Code:
 
+(ert-deftest agent-shell-ui-create-new-fragment-preserves-existing-test ()
+  "Creating a fragment with a reused ID preserves the earlier fragment."
+  (with-temp-buffer
+    (dolist (body '("first" "second"))
+      (agent-shell-ui-update-fragment
+       (agent-shell-ui-make-fragment-model :block-id "same" :body body)
+       :create-new t))
+    (should (string-match-p "first" (buffer-string)))
+    (should (string-match-p "second" (buffer-string)))))
+
+(ert-deftest agent-shell-ui-create-new-text-preserves-existing-test ()
+  "Creating text with a reused ID leaves the earlier entry intact."
+  (with-temp-buffer
+    (dolist (text '("first" "second"))
+      (agent-shell-ui-update-text :block-id "same" :text text :create-new t))
+    (agent-shell-ui-update-text :block-id "same" :text "third")
+    (should (string-match-p "first\n\nthird\\'" (buffer-string)))
+    (should-not (string-match-p "second" (buffer-string)))))
+
 (ert-deftest agent-shell-ui-body-invisible-p-handles-whitespace-only-body ()
   ;; Regression for PR #597 (pi-acp): the markdown renderer strips
   ;; an empty `\\`\\`\\`console' fence down to a body of only
