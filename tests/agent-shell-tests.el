@@ -4379,6 +4379,93 @@ other unknown ones."
         (should session-init-called)
         (should (equal (map-nested-elt agent-shell--state '(:session :id)) "new-session-789"))))))
 
+(ert-deftest agent-shell--handle-finishes-init-when-restore-render-fails ()
+  "Test a failure rendering a `session/load' replay still finishes init.
+
+The replay renders from the load's success handler, whose errors the
+ACP client only logs.  If one escaped, the shell would never stop its
+busy indicator or emit `prompt-ready'.  It is reported in the shell
+instead."
+  (let* ((shell-buffer (generate-new-buffer " *agent-shell-restore-error-test*"))
+         (heartbeat (agent-shell-heartbeat-make :on-heartbeat #'ignore))
+         (events nil)
+         (fragments nil)
+         ;; ERT binds `debug-on-error', under which the error is
+         ;; signaled for the debugger to catch.
+         (debug-on-error nil)
+         (agent-shell-session-restore-verbosity 'first-last))
+    (unwind-protect
+        (with-current-buffer shell-buffer
+          (setq major-mode 'agent-shell-mode)
+          ;; Built with `list'/`cons' so `map-put!' can mutate in place.
+          (setq-local agent-shell--state
+                      (list (cons :buffer shell-buffer)
+                            (cons :client (list (cons :request-handlers '(ignore))
+                                                (cons :notification-handlers '(ignore))
+                                                (cons :error-handlers '(ignore))))
+                            (cons :initialized t)
+                            (cons :request-count 0)
+                            (cons :last-activity-time nil)
+                            (cons :heartbeat heartbeat)
+                            (cons :session (list (cons :id nil)
+                                                 (cons :mode-id nil)
+                                                 (cons :modes nil)))
+                            (cons :resume-session-id "session-123")
+                            (cons :supports-session-load t)
+                            (cons :pending-restore (agent-shell--make-pending-restore))
+                            (cons :active-requests nil)
+                            (cons :last-entry-type nil)
+                            (cons :event-subscriptions nil)))
+          (agent-shell-subscribe-to
+           :shell-buffer shell-buffer
+           :on-event (lambda (event)
+                       (push (map-elt event :event) events)))
+          (agent-shell-heartbeat-start :heartbeat heartbeat)
+          (cl-letf (((symbol-function 'agent-shell--update-fragment)
+                     (lambda (&rest args)
+                       (push (cons (plist-get args :block-id) (plist-get args :body))
+                             fragments)))
+                    ((symbol-function 'agent-shell--update-header-and-mode-line)
+                     #'ignore)
+                    ((symbol-function 'agent-shell--finish-output) #'ignore)
+                    ((symbol-function 'agent-shell-cwd) (lambda () "/tmp"))
+                    ((symbol-function 'agent-shell--resolve-path) #'identity)
+                    ((symbol-function 'agent-shell--mcp-servers) (lambda () []))
+                    ((symbol-function 'agent-shell--replay-turn) #'ignore)
+                    ;; Where the original failure surfaced: rendering a
+                    ;; replayed table under a narrowing.
+                    ((symbol-function 'agent-shell--render-deferred-markup)
+                     (lambda () (signal 'args-out-of-range '(42160))))
+                    ((symbol-function 'acp-send-request)
+                     (lambda (&rest args)
+                       (let ((method (map-elt (plist-get args :request) :method)))
+                         (unless (equal method "session/load")
+                           (error "Unexpected method: %s" method))
+                         ;; The agent replays the conversation before it
+                         ;; answers the request.
+                         (agent-shell--on-notification
+                          :state agent-shell--state
+                          :acp-notification (agent-shell-tests--make-session-update
+                                             "user_message_chunk" "Hello"))
+                         (funcall (plist-get args :on-success)
+                                  '((sessionId . "session-123")))))))
+            (agent-shell--handle :shell-buffer shell-buffer))
+          (should (eq (map-elt heartbeat :status) 'ended))
+          (should (equal (map-nested-elt agent-shell--state '(:session :id)) "session-123"))
+          (should (map-elt agent-shell--state :init-finished))
+          (should-not (map-elt agent-shell--state :pending-restore))
+          (should-not (map-elt agent-shell--state :active-requests))
+          (should (equal (seq-filter (lambda (event)
+                                       (memq event '(init-session session-restored
+                                                                  prompt-ready init-finished)))
+                                     (reverse events))
+                         '(init-session session-restored prompt-ready init-finished)))
+          (should (string-match-p
+                   (regexp-quote "Warning: Couldn't render restored history: Args out of range: 42160")
+                   (or (map-elt fragments "restore_failed") ""))))
+      (agent-shell-heartbeat-stop :heartbeat heartbeat)
+      (kill-buffer shell-buffer))))
+
 (ert-deftest agent-shell--outgoing-request-decorator-reaches-client ()
   "Test that :outgoing-request-decorator from state reaches the ACP client."
   (with-temp-buffer
@@ -6477,6 +6564,39 @@ interaction (e.g. \"1/2\" after switching to the latest interaction)."
             (should (eq (get-text-property prompt-start 'font-lock-face)
                         'agent-shell-viewport-prompt))))))))
 
+(ert-deftest agent-shell-viewport-edit-mode-starts-with-empty-undo-history-test ()
+  "Undo in compose must not bring back pages shown in view mode.
+
+Major-mode changes keep `buffer-undo-list', so each view page's
+`erase-buffer' and insert stayed undoable after switching to compose."
+  (let ((agent-shell-file-completion-enabled nil)
+        (viewport-buffer (generate-new-buffer "*agent-shell undo test* [viewport]")))
+    (unwind-protect
+        (with-current-buffer viewport-buffer
+          (cl-letf (((symbol-function 'agent-shell-viewport--position)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'agent-shell-viewport--update-header)
+                     (lambda (&rest _))))
+            (buffer-enable-undo)
+            (agent-shell-viewport-view-mode)
+            (agent-shell-viewport--initialize :prompt "page 1\n" :response "one")
+            (undo-boundary)
+            (agent-shell-viewport--initialize :prompt "page 2\n" :response "two")
+            (undo-boundary)
+            (agent-shell-viewport-edit-mode)
+            (agent-shell-viewport--initialize)
+            (undo-boundary)
+            (setq last-command nil)
+            (should-error (undo) :type 'user-error)
+            (should (string-empty-p (buffer-string)))
+            ;; Typing in compose stays undoable.
+            (insert "draft")
+            (undo-boundary)
+            (setq last-command nil)
+            (undo)
+            (should (string-empty-p (buffer-string)))))
+      (kill-buffer viewport-buffer))))
+
 (ert-deftest agent-shell--refresh-session-title-skips-when-list-unsupported ()
   "Test `agent-shell--refresh-session-title' sends no request without `list'.
 
@@ -7346,6 +7466,25 @@ into, so busy state alone no longer sends the region to the queue."
             :busy t)
            '(:asked-minibuffer nil :prompt-input "context from source"))))
 
+(ert-deftest agent-shell-quote-region-marks-reading-place-test ()
+  "Quoting leaves the mark where point was, so popping it resumes reading."
+  (should (equal
+           (agent-shell-tests--with-persistent-prompt-shell
+            (lambda ()
+              (goto-char (point-min))
+              (search-forward "list the")
+              (let ((reading-place (point)))
+                (cl-letf (((symbol-function 'agent-shell--get-region)
+                           (lambda (&rest _) '((:content . "list the"))))
+                          ((symbol-function 'agent-shell--typing-at-prompt-p) #'ignore)
+                          ((symbol-function 'shell-maker-point-at-last-prompt-p) #'ignore)
+                          ((symbol-function 'region-active-p) (lambda () t)))
+                  (agent-shell-quote-region))
+                (list :at-prompt (= (point) (point-max))
+                      :mark-at-reading-place (eql (mark t) reading-place))))
+            :busy t)
+           '(:at-prompt t :mark-at-reading-place t))))
+
 (ert-deftest agent-shell-quote-region-waits-for-prompt-test ()
   "Quoting before the first prompt waits for it, like other inserts.
 
@@ -8170,6 +8309,20 @@ command would otherwise flash as a block before the description lands."
                                                          (:description . "Build it"))))))
                               "t1")
                              :title))))))
+
+(ert-deftest agent-shell--fit-to-window-line-undisplayed-on-split-frame-test ()
+  "A buffer shown in no window is measured against a live window.
+
+On a split frame, the root window is an internal window, which has no
+body to measure."
+  (save-window-excursion
+    (delete-other-windows)
+    (split-window-right)
+    (with-temp-buffer
+      (should-not (get-buffer-window (current-buffer) t))
+      (should (equal "cd /tmp"
+                     (agent-shell--fit-to-window-line
+                      :text "cd /tmp" :buffer (current-buffer)))))))
 
 (ert-deftest agent-shell--tag-untagged-output-tags-same-chars-test ()
   "Tagging only the untagged tail covers what a whole-range tag would."
@@ -9356,6 +9509,98 @@ A directory that does not exist is an error, rather than leaving
       (dolist (dir (list passed-dir computed-dir))
         (when (file-directory-p dir)
           (delete-directory dir))))))
+
+(ert-deftest agent-shell--send-command-renders-deferred-markup-in-viewport-test ()
+  "Test the end of a turn renders the viewport's held-back markup too.
+
+Streaming renders into the viewport alongside the shell, holding back a
+list item on the last line until its newline arrives.  A response
+ending in one never gets that newline, so the viewport's copy stays raw
+unless the turn's end renders it there as well."
+  (let* ((captured-on-success nil)
+         (shell-buffer (current-buffer))
+         (viewport-buffer (generate-new-buffer "*agent-shell-test-viewport*"))
+         (agent-shell--state (list (cons :buffer shell-buffer)
+                                   (cons :event-subscriptions nil)
+                                   (cons :client 'test-client)
+                                   (cons :session (list (cons :id "test-session") (cons :title nil)))
+                                   (cons :last-entry-type nil)
+                                   (cons :tool-calls nil)
+                                   (cons :usage (list (cons :total-tokens 0)))
+                                   (cons :idle-timer nil)))
+         (agent-shell-show-busy-indicator nil)
+         (agent-shell-show-usage-at-turn-end nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-shell--state)
+                   (lambda () agent-shell--state))
+                  ((symbol-function 'agent-shell--send-request)
+                   (lambda (&rest args)
+                     (setq captured-on-success (plist-get args :on-success))))
+                  ((symbol-function 'agent-shell-viewport--buffer)
+                   (lambda (&rest _) viewport-buffer))
+                  ((symbol-function 'agent-shell-viewport--initialize)
+                   (lambda (&rest _)))
+                  ((symbol-function 'agent-shell-viewport--update-header)
+                   (lambda (&rest _)))
+                  ((symbol-function 'agent-shell--finish-output)
+                   (lambda (&rest _)))
+                  ((symbol-function 'agent-shell--prompt-queue-process-next)
+                   (lambda (&rest _))))
+          (with-current-buffer viewport-buffer
+            (agent-shell-viewport-view-mode))
+          (agent-shell--send-command
+           :prompt "Hello"
+           :shell-buffer shell-buffer)
+          (with-current-buffer viewport-buffer
+            (let ((inhibit-read-only t))
+              (insert (propertize "Done.\n\n- Last item"
+                                  'agent-shell-ui-section 'body))))
+          (should captured-on-success)
+          (funcall captured-on-success '((stopReason . "end_turn")))
+          (with-current-buffer viewport-buffer
+            (goto-char (point-max))
+            (beginning-of-line)
+            (should (get-text-property (point) 'agent-shell-markdown-list-rendered))
+            (should-not (looking-at-p "- "))))
+      (kill-buffer viewport-buffer))))
+(defun agent-shell-tests--make-flymake-diagnostic (buffer beg end text type)
+  "Make a flymake diagnostic in BUFFER from BEG to END, with TEXT and TYPE.
+
+Emacs 31 made TYPE a mandatory fourth argument and moved TEXT into INFO."
+  (if (equal (func-arity #'flymake-make-diagnostic) '(4 . 5))
+      (flymake-make-diagnostic buffer beg end text type)
+    (flymake-make-diagnostic buffer beg end type text)))
+
+(ert-deftest agent-shell--get-flymake-error-context-at-point-test ()
+  "Report the flymake diagnostic at point when Flymake is on."
+  (with-temp-buffer
+    (insert "first line\nsecond line\n")
+    (goto-char (+ (point-min) 6))
+    (let ((flymake-mode t)
+          (diagnostic (agent-shell-tests--make-flymake-diagnostic
+                       (current-buffer) (point-min) 10
+                       "unused variable" 'warning)))
+      (cl-letf (((symbol-function 'flymake-diagnostics)
+                 (lambda (&optional _beg _end) (list diagnostic))))
+        (should (string-match-p "unused variable"
+                                (agent-shell--get-flymake-error-context)))))))
+
+(ert-deftest agent-shell--get-flymake-error-context-ignores-inactive-flymake-test ()
+  "Return nothing from the flymake branch when `flymake-mode' is off.
+
+Flycheck's `flycheck-eglot-mode' turns Flymake off but advises
+`flymake-diagnostics' to answer with every cached diagnostic ending
+at or after point, which puts diagnostics from other lines at point."
+  (with-temp-buffer
+    (insert "first line\nsecond line\n")
+    (goto-char (point-min))
+    (let ((flymake-mode nil)
+          (diagnostic (agent-shell-tests--make-flymake-diagnostic
+                       (current-buffer) 12 18
+                       "unused variable" 'warning)))
+      (cl-letf (((symbol-function 'flymake-diagnostics)
+                 (lambda (&optional _beg _end) (list diagnostic))))
+        (should-not (agent-shell--get-flymake-error-context))))))
 
 (provide 'agent-shell-tests)
 ;;; agent-shell-tests.el ends here
