@@ -11075,9 +11075,9 @@ tick, its first busy tick and its ending tick, and on none in between."
     (lambda (_heartbeat status)
       (when-let* (((buffer-live-p shell-buffer))
                   (frames (with-current-buffer shell-buffer
-                            (cons (agent-shell--busy-indicator-frame)
-                                  (and agent-shell-chat-mode
-                                       (agent-shell-chat--busy-frame))))))
+                            (list (agent-shell--busy-indicator-frame)
+                                  (agent-shell-chat--busy-frame)
+                                  agent-shell-chat-mode))))
         ;; 'ended is the final tick; render even if off-screen to
         ;; ensure animation is hidden.  Frames go unrecorded while
         ;; off-screen, so the next visible tick redraws.
@@ -11089,8 +11089,9 @@ tick, its first busy tick and its ending tick, and on none in between."
               (with-current-buffer shell-buffer
                 (agent-shell--update-header-and-mode-line
                  :cache-enabled (eq status 'busy))
-                (when agent-shell-chat-mode
-                  (agent-shell-chat--animate-live-marker))))
+                (if agent-shell-chat-mode
+                    (agent-shell-chat--animate-live-marker)
+                  (agent-shell--animate-busy-prompt))))
           (setq shell-frames nil))
         (when-let* ((viewport-buffer (agent-shell-viewport--buffer
                                       :shell-buffer shell-buffer

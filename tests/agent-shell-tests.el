@@ -9334,6 +9334,120 @@ tick after an off-screen one."
             (should (= redraws 4))))
       (kill-buffer shell-buffer))))
 
+(defun agent-shell-tests--beat (status value)
+  "Set the shell's heartbeat to STATUS at VALUE, as a heartbeat tick does."
+  (setf (map-elt agent-shell--state :heartbeat)
+        (list (cons :status status) (cons :value value))))
+
+(defmacro agent-shell-tests--with-busy-prompt (&rest body)
+  "Run BODY in a non-chat shell buffer ending in a live `Claude> ' prompt."
+  (declare (indent 0))
+  `(with-temp-buffer
+     (setq-local agent-shell--state nil)
+     (agent-shell-tests--beat 'busy 1)
+     (insert "Claude> hello\n\nreply\n\n")
+     (let ((prompt-start (point-max)))
+       (insert "Claude> ")
+       (setq-local comint-last-prompt (cons (copy-marker prompt-start)
+                                            (copy-marker (point-max)))))
+     (let ((agent-shell-chat-mode nil)
+           (agent-shell-show-busy-indicator t)
+           (agent-shell-prompt-busy-frames '("|" "/" "-" "\\")))
+       ,@body)))
+
+(defun agent-shell-tests--busy-prompt ()
+  "Return the live prompt as drawn, busy frame included, unpropertized.
+
+For example, returns \"Claude|> \" while busy and \"Claude> \" when idle."
+  (let ((prompt (buffer-substring-no-properties (car comint-last-prompt)
+                                                (cdr comint-last-prompt))))
+    (if-let* ((overlay agent-shell--busy-prompt-overlay)
+              (offset (- (overlay-start overlay) (car comint-last-prompt))))
+        (concat (substring prompt 0 offset)
+                (substring-no-properties (overlay-get overlay 'before-string))
+                (substring prompt offset))
+      prompt)))
+
+(ert-deftest agent-shell--animate-busy-prompt-draws-frame-test ()
+  "A busy heartbeat draws its frame ahead of the live prompt's chevron.
+Removed once the heartbeat ends."
+  (agent-shell-tests--with-busy-prompt
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude/> "))
+    (agent-shell-tests--beat 'busy 2)
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude-> "))
+    (agent-shell-tests--beat 'ended nil)
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude> "))
+    (should-not agent-shell--busy-prompt-overlay)))
+
+(ert-deftest agent-shell--animate-busy-prompt-accepts-frame-shapes-test ()
+  "Busy prompt frames can be a list, vector, string or function."
+  (agent-shell-tests--with-busy-prompt
+    (dolist (case '((("a" "b") . "Claudeb> ")
+                    (["a" "b"] . "Claudeb> ")
+                    ("(busy)" . "Claude(busy)> ")))
+      (setq agent-shell-prompt-busy-frames (car case))
+      (agent-shell--animate-busy-prompt)
+      (should (equal (agent-shell-tests--busy-prompt) (cdr case))))
+    (setq agent-shell-prompt-busy-frames (lambda () "(connecting)"))
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude(connecting)> "))
+    (setq agent-shell-prompt-busy-frames (lambda () '("a" "b")))
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claudeb> "))
+    (setq agent-shell-prompt-busy-frames #'ignore)
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude> "))))
+
+(ert-deftest agent-shell--animate-busy-prompt-skips-unchanged-frame-test ()
+  "A tick drawing the frame already shown leaves the overlay untouched.
+A static frame, ticked alongside an animated header, would otherwise
+rewrite the prompt on every beat."
+  (agent-shell-tests--with-busy-prompt
+    (setq agent-shell-prompt-busy-frames "(busy)")
+    (agent-shell--animate-busy-prompt)
+    (let ((drawn (overlay-get agent-shell--busy-prompt-overlay 'before-string)))
+      (agent-shell-tests--beat 'busy 2)
+      (agent-shell--animate-busy-prompt)
+      (should (eq (overlay-get agent-shell--busy-prompt-overlay 'before-string)
+                  drawn)))))
+
+(ert-deftest agent-shell--animate-busy-prompt-skips-chat-mode-test ()
+  "Chat mode animates its own marker, so no busy frame is drawn here."
+  (agent-shell-tests--with-busy-prompt
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude/> "))
+    (setq agent-shell-chat-mode t)
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude> "))))
+
+(ert-deftest agent-shell--busy-prompt-cleared-on-chat-enable-test ()
+  "Turning chat mode on mid-turn removes the busy frame already drawn.
+Chat mode's heartbeat ticks animate its own marker instead, so nothing
+else would remove it."
+  (agent-shell-tests--with-busy-prompt
+    (agent-shell--animate-busy-prompt)
+    (should (equal (agent-shell-tests--busy-prompt) "Claude/> "))
+    (cl-letf (((symbol-function 'agent-shell-subscribe-to) #'ignore)
+              ((symbol-function 'agent-shell-unsubscribe) #'ignore)
+              ((symbol-function 'agent-shell-chat--relabel) #'ignore))
+      (agent-shell-chat--enable)
+      (should (equal (agent-shell-tests--busy-prompt) "Claude> "))
+      (agent-shell-chat--disable))))
+
+(ert-deftest agent-shell--animate-busy-prompt-keeps-output-above-test ()
+  "Output inserted above the live prompt stays ahead of the busy frame."
+  (agent-shell-tests--with-busy-prompt
+    (agent-shell--animate-busy-prompt)
+    (agent-shell--with-buffer-narrowed-to (car comint-last-prompt)
+      (goto-char (point-max))
+      (insert "more reply\n"))
+    (should (equal (buffer-substring (car comint-last-prompt) (point-max))
+                   "Claude> "))
+    (should (equal (agent-shell-tests--busy-prompt) "Claude/> "))))
+
 ;; TODO: Remove after 2026-11-29, along with the check it tests.
 ;; Declared special so the test can bind the retired variable.
 (defvar agent-shell-chat-busy-frames)
