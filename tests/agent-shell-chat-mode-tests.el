@@ -1040,6 +1040,15 @@ would otherwise push the marker right."
       (setq agent-shell-prompt-busy-frames #'ignore)
       (should-not (agent-shell-chat--busy-frame)))))
 
+(ert-deftest agent-shell-prompt-busy-frames-accepts-empty-test ()
+  "Empty busy frames show nothing, rather than dividing by zero each beat."
+  (agent-shell-chat-mode-tests--with-shell
+    (let ((agent-shell-show-busy-indicator t))
+      (agent-shell-chat-mode-tests--beat 'busy 3)
+      (dolist (frames (list [] "" (lambda () [])))
+        (let ((agent-shell-prompt-busy-frames frames))
+          (should-not (agent-shell-chat--busy-frame)))))))
+
 (ert-deftest agent-shell-chat-live-marker-spaces-wide-frame-test ()
   "A frame wider than a column is followed by a plain space, not aligned.
 It can't fit the body indent, so aligning would leave no space before
