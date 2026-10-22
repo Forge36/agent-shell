@@ -8519,7 +8519,7 @@ would ever render it."
 The table's last row has no newline, so it renders only at the end of
 the turn, re-laying out the table above the prompt.  Undo entries hold
 absolute positions, so the input typed in the meantime moves away from
-them: undo edited the table instead."
+them.  Without a reset, undo would edit the table instead."
   (should (equal
            (agent-shell-tests--with-persistent-prompt-shell
             (lambda ()
@@ -8549,11 +8549,11 @@ them: undo edited the table instead."
                   ;; undo list before running the undo command.
                   (undo-boundary)
                   (undo)
-                  (list :prompt-input (agent-shell--prompt-input)
-                        :table-intact (and (string-match-p
-                                            "│ longer value │" (buffer-string))
-                                           t))))))
-           '(:prompt-input nil :table-intact t))))
+                  (list (cons :prompt-input (agent-shell--prompt-input))
+                        (cons :table-intact (and (string-match-p
+                                                  "│ longer value │" (buffer-string))
+                                                 t)))))))
+           '((:prompt-input . nil) (:table-intact . t)))))
 
 (ert-deftest agent-shell-file-display-action-test ()
   "Files open per `agent-shell-file-display-action\'.
