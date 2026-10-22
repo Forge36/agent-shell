@@ -8290,7 +8290,6 @@ pending-restore state once replay completes."
                 ;; it out of undo history (see `agent-shell--reset-undo-history').
                 (let ((buffer-undo-list t)
                       (shell-maker-inhibit-auto-scroll t)
-                      (gc-cons-threshold (max gc-cons-threshold (* 16 1024 1024)))
                       (prompt-start (and comint-last-prompt
                                          (marker-position (car comint-last-prompt))
                                          (agent-shell--live-input-prompt-p comint-last-prompt)
