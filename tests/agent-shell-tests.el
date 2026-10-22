@@ -6100,6 +6100,7 @@ Returns the resulting buffer string, with the live prompt trailing."
                        (lambda (_state) 'last))
                       ((symbol-function 'agent-shell--replay-turn)
                        (lambda (state _turn)
+                         (should-not (shell-maker--should-auto-scroll-p))
                          (let ((inhibit-read-only t))
                            (goto-char (point-max))
                            (insert "Claude> replayed"))
