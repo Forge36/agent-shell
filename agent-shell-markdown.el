@@ -1470,7 +1470,7 @@ For example, the buffer \"see ![logo](logo.png)\" becomes
                             :max-width (or (map-elt attributes :max-width)
                                            (agent-shell-markdown--image-max-width))
                             :max-height (map-elt attributes :max-height))))
-                (image-flush image)
+                (image-flush image t)
                 (delete-region markup-start content-end)
                 (goto-char markup-start)
                 (insert placeholder)
@@ -1568,7 +1568,7 @@ renders the image in place of that text."
                                     (agent-shell-markdown-visit-file :file resolved)))
                      (image-keymap (agent-shell-markdown--make-ret-binding-map
                                     open-action)))
-                (image-flush image)
+                (image-flush image t)
                 (put-text-property path-start path-end 'display image)
                 (put-text-property path-start path-end 'keymap image-keymap)
                 ;; Nothing about a displayed image says it's actionable, so
@@ -3463,7 +3463,7 @@ re-creating and flushing it on each resize would be wasted work."
                           file nil nil
                           :max-width max-width
                           :max-height (image-property image :max-height))))
-      (image-flush resized)
+      (image-flush resized t)
       (put-text-property start end 'display resized))
     (put-text-property start end
                        'agent-shell-markdown-image-window-width window-width)))
