@@ -4,17 +4,17 @@
 
 ;; Author: Alvaro Ramirez https://xenodium.com
 ;; URL: https://github.com/xenodium/agent-shell
-;; Version: 0.88.1
-;; Package-Requires: ((emacs "29.1") (shell-maker "0.97.5") (acp "0.17.1"))
+;; Version: 0.88.2
+;; Package-Requires: ((emacs "29.1") (shell-maker "0.98.2") (acp "0.17.1"))
 
-(defconst agent-shell--version "0.88.1")
+(defconst agent-shell--version "0.88.2")
 
 ;; Minimum dependency versions, as declared in the `Package-Requires'
 ;; header above.  Package managers that resolve versions enforce the
 ;; header on install; those that only resolve dependency names (straight.el,
 ;; for one) leave `agent-shell--start' as the sole check, so keep these two
 ;; in sync with it.
-(defconst agent-shell--shell-maker-minimum-version "0.97.5")
+(defconst agent-shell--shell-maker-minimum-version "0.98.2")
 
 (defconst agent-shell--acp-minimum-version "0.17.1")
 
@@ -109,8 +109,6 @@
 (require 'shell-maker)
 (require 'svg nil :noerror)
 (require 'transient)
-
-(defvar shell-maker-inhibit-auto-scroll)
 
 ;; Optional flycheck integration (used in agent-shell--get-flycheck-error-context)
 (declare-function flycheck-overlay-errors-at "flycheck" (pos))
