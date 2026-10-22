@@ -1080,14 +1080,16 @@ terminal Emacs can display them as OSC 8 hyperlinks when enabled.
 
 VERB names the action in both hints (see
 `agent-shell-markdown--link-verb' for the default and when it
-resolves).
+resolves).  Both hints follow it with URL in full, so the target can
+be inspected before opening it.
 
 TRACKING-FILE, when non-nil, records opening the link there (see
 `agent-shell-markdown--track-link-open').
 
 For example, over the `docs' of a rendered \"[docs](https://gnu.org)\",
 RET opens the URL, the echo area reads \"Press RET to open in
-browser\", and hovering shows \"Open in browser\"."
+browser: https://gnu.org\", and hovering shows \"Open in browser:
+https://gnu.org\"."
   (let* ((open-action (lambda () (interactive)
                         (when tracking-file
                           (agent-shell-markdown--track-link-open
@@ -1102,14 +1104,15 @@ browser\", and hovering shows \"Open in browser\"."
        (agent-shell-markdown--action-hint
         :action open-action
         :keymap link-map
-        :verb (agent-shell-markdown--link-verb url verb))))
+        :verb (format "%s: %s" (agent-shell-markdown--link-verb url verb) url))))
     ;; The mouse gets the same wording without a key in it, resolved on
     ;; hover like the echoed hint is.
     (put-text-property start end 'help-echo
                        (lambda (_window _object _pos)
                          (let ((text (agent-shell-markdown--link-verb url verb)))
                            (concat (upcase (substring text 0 1))
-                                   (substring text 1)))))
+                                   (substring text 1)
+                                   ": " url))))
     ;; A hand pointer when over is enough. No need for `mouse-face'.
     (put-text-property start end 'pointer 'hand)
     (put-text-property start end 'agent-shell-markdown-url url)
