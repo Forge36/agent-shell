@@ -457,7 +457,11 @@ bullet, while a body of prose is untouched."
                                (not (get-text-property
                                      (1- (point-max))
                                      'agent-shell-markdown-table-source))))))
-            (agent-shell--render-markdown :complete t)))))))
+            (agent-shell--render-markdown :complete t))))))
+  ;; Rendering can resize text above the prompt, shifting any unsubmitted
+  ;; input away from the undo entries recorded for it.
+  (when (agent-shell--live-input-prompt-p comint-last-prompt)
+    (agent-shell--reset-undo-history)))
 
 (defcustom agent-shell-confirm-interrupt t
   "Whether to prompt for confirmation before interrupting.

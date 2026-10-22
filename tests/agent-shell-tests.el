@@ -8513,6 +8513,48 @@ would ever render it."
                                       (point-min) (point-max))))))
       (delete-file image-file))))
 
+(ert-deftest agent-shell--render-deferred-markup-resets-undo-history-test ()
+  "Undo after a turn ending in a table undoes what was typed at the prompt.
+
+The table's last row has no newline, so it renders only at the end of
+the turn, re-laying out the table above the prompt.  Undo entries hold
+absolute positions, so the input typed in the meantime moves away from
+them: undo edited the table instead."
+  (should (equal
+           (agent-shell-tests--with-persistent-prompt-shell
+            (lambda ()
+              (buffer-enable-undo)
+              (let ((agent-shell-show-busy-indicator nil)
+                    (agent-shell-show-usage-at-turn-end nil)
+                    (on-success nil))
+                (cl-letf (((symbol-function 'agent-shell--send-request)
+                           (lambda (&rest args)
+                             (setq on-success (plist-get args :on-success))))
+                          ((symbol-function 'agent-shell--prompt-queue-process-next)
+                           #'ignore)
+                          ((symbol-function 'shell-maker--write-input-ring-history)
+                           #'ignore))
+                  (agent-shell--send-command :prompt "list the files"
+                                             :shell-buffer (current-buffer))
+                  (agent-shell--update-fragment
+                   :state agent-shell--state
+                   :block-id "agent-message"
+                   :body "| A |\n|---|\n| longer value |"
+                   :create-new t)
+                  (goto-char (point-max))
+                  (insert "draft")
+                  (undo-boundary)
+                  (funcall on-success '((stopReason . "end_turn")))
+                  ;; Stands in for the command loop, which boundaries the
+                  ;; undo list before running the undo command.
+                  (undo-boundary)
+                  (undo)
+                  (list :prompt-input (agent-shell--prompt-input)
+                        :table-intact (and (string-match-p
+                                            "│ longer value │" (buffer-string))
+                                           t))))))
+           '(:prompt-input nil :table-intact t))))
+
 (ert-deftest agent-shell-file-display-action-test ()
   "Files open per `agent-shell-file-display-action\'.
 
