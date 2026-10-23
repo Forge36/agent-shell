@@ -819,11 +819,10 @@ Provider implementations can set =:notification-handler= in =agent-shell-make-ag
      (when (equal (map-nested-elt event '(:acp-notification method))
                   "_example/status")
        (message "%s" (map-nested-elt event '(:acp-notification params text)))
-       (map-put! (map-elt event :state) :last-activity-time (current-time))
        t)))
 #+end_src
 
-Handling a notification bypasses all core bookkeeping for it, which becomes the provider's responsibility. The example maintains =:last-activity-time= and leaves standard notifications such as =session/update= to core by returning nil. Independent ACP subscribers and traffic logging still receive the original notification. See =C-h f agent-shell-make-agent-config= for the configuration options.
+Return nil for standard notifications such as =session/update= so core keeps rendering them. See =C-h f agent-shell-make-agent-config= for the configuration options.
 
 ** Usage
 
