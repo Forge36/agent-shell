@@ -99,7 +99,27 @@
           (agent-shell-worktree-test--git directory "clone" "--bare" "-q" main bare)
           (agent-shell-worktree-test--git bare "worktree" "add" "--detach" "-q" linked "HEAD")
           (let ((default-directory (file-name-as-directory linked)))
-            (should (file-equal-p (agent-shell-worktree--git-repo-root) linked))))
+            (should (file-equal-p (agent-shell-worktree--main-worktree-root) linked))))
+      (when (file-in-directory-p directory temporary-file-directory)
+        (delete-directory directory t)))))
+
+(ert-deftest agent-shell-worktree-old-git-falls-back-to-current-root-test ()
+  "Fall back to the current root when `git worktree list -z' fails."
+  (let* ((directory (make-temp-file "agent-shell-worktree-old-git " t))
+         (main (expand-file-name "main" directory))
+         (linked (expand-file-name "linked" directory))
+         (process-file (symbol-function 'process-file)))
+    (unwind-protect
+        (progn
+          (agent-shell-worktree-test--repository main)
+          (agent-shell-worktree-test--git main "worktree" "add" "-qb" "linked" linked)
+          (let ((default-directory (file-name-as-directory linked)))
+            (cl-letf (((symbol-function 'process-file)
+                       (lambda (program infile buffer display &rest args)
+                         (if (member "-z" args)
+                             129
+                           (apply process-file program infile buffer display args)))))
+              (should (file-equal-p (agent-shell-worktree--main-worktree-root) linked)))))
       (when (file-in-directory-p directory temporary-file-directory)
         (delete-directory directory t)))))
 
