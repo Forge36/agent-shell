@@ -7421,22 +7421,26 @@ A handled notification skips core but still records activity."
                               'invisible t 'shell-maker--marker t)))
       ;; Typed at the shell.
       (insert (propertize "Claude> " 'font-lock-face
-                          '(comint-highlight-prompt comint-highlight-prompt))
+                          '(comint-highlight-prompt comint-highlight-prompt)
+                          'field 'output)
               (propertize "typed" 'font-lock-face 'comint-highlight-input)
               "\n" marker
               ;; Quoted marker text without the property is not a boundary.
               "reply <shell-maker-end-of-prompt>\n\n")
       ;; Replayed by a restored session.
       (insert (propertize "Claude> " 'font-lock-face
-                          '(agent-shell-prompt comint-highlight-prompt))
+                          '(agent-shell-prompt comint-highlight-prompt)
+                          'field 'output)
               (propertize "replayed" 'font-lock-face 'agent-shell-input)
               marker "\n\n")
       ;; Steered into a running turn.
-      (insert (propertize "Claude> " 'font-lock-face 'agent-shell-prompt)
+      (insert (propertize "Claude> " 'font-lock-face 'agent-shell-prompt
+                          'field 'output)
               (propertize "[steer] steered" 'font-lock-face 'agent-shell-input)
               marker "\n\n")
       ;; Live, still being typed into.
-      (insert (propertize "Claude> " 'font-lock-face 'comint-highlight-prompt)
+      (insert (propertize "Claude> " 'font-lock-face 'comint-highlight-prompt
+                          'field 'output)
               "draft"))
     (should (equal (seq-map (lambda (range)
                               (list (buffer-substring-no-properties
@@ -7450,6 +7454,28 @@ A handled notification skips core but still records activity."
                      ("Claude> " "replayed")
                      ("Claude> " "[steer] steered")
                      ("Claude> " "draft"))))))
+
+(ert-deftest agent-shell-prompt-ranges-field-test ()
+  "Only prompt-faced text ending an `output' field is a prompt.
+A response quoting a prompt in prompt face is not one."
+  (with-temp-buffer
+    (insert (propertize (concat "Quoting "
+                                (propertize "Claude> " 'font-lock-face
+                                            'comint-highlight-prompt)
+                                "in a reply\n")
+                        'field 'output)
+            (propertize "Claude> " 'font-lock-face 'comint-highlight-prompt
+                        'field 'output)
+            "draft")
+    (should (equal (seq-map (lambda (range)
+                              (list (buffer-substring-no-properties
+                                     (map-elt range :prompt-start)
+                                     (map-elt range :prompt-end))
+                                    (buffer-substring-no-properties
+                                     (map-elt range :input-start)
+                                     (map-elt range :input-end))))
+                            (agent-shell-prompt-ranges))
+                   '(("Claude> " "draft"))))))
 
 (ert-deftest agent-shell--live-input-prompt-p-narrowed-above-prompt-test ()
   "Guard against inverted `text-property-any' bounds while narrowed.

@@ -153,7 +153,8 @@ label reporting itself more than once shows up as a repeat."
 (defun agent-shell-chat-mode-tests--prompt (text)
   "Insert a shell prompt run displaying TEXT, as shell-maker fontifies it."
   (insert (propertize text 'font-lock-face
-                      '(comint-highlight-prompt comint-highlight-prompt))))
+                      '(comint-highlight-prompt comint-highlight-prompt)
+                      'field 'output)))
 
 (defun agent-shell-chat-mode-tests--marker ()
   "Insert the invisible `<shell-maker-end-of-prompt>' marker.

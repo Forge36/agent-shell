@@ -198,6 +198,10 @@ Consecutive prompts (e.g. an empty submission leaves a stale prompt
 above the fresh one) are separate entries, since input or whitespace
 separates them.
 
+A prompt is prompt-faced text ending an `output' field, as shell-maker
+marks process output, so prompt-faced text elsewhere (say, quoted in a
+response) is not one.
+
 For example, in a buffer holding:
 
   Claude> hi
@@ -212,13 +216,17 @@ returns:
     (:input-start . 53) (:input-end . 58)))"
   (let ((runs '())
         (pos (point-min)))
+    ;; A prompt ends where comint's `output' field gives way to input (or at
+    ;; the buffer end), as `comint-next-prompt' relies on.  Walking `field'
+    ;; skips the many `font-lock-face' changes in between.
     (while (< pos (point-max))
-      (let ((run-end (or (next-single-property-change pos 'font-lock-face)
-                         (point-max))))
-        (when (agent-shell--prompt-face-p
-               (get-text-property pos 'font-lock-face))
-          (push (cons pos run-end) runs))
-        (setq pos run-end)))
+      (setq pos (next-single-property-change pos 'field nil (point-max)))
+      (when (agent-shell--prompt-face-p
+             (get-text-property (1- pos) 'font-lock-face))
+        (push (cons (or (previous-single-property-change pos 'font-lock-face)
+                        (point-min))
+                    pos)
+              runs)))
     (setq runs (nreverse runs))
     (seq-mapn
      (lambda (run next)
