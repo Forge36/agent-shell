@@ -3127,6 +3127,15 @@ For example, ((file_path . \"a.el\")) returns \"a.el\"."
             (seq-map (lambda (key) (map-elt raw-input key))
                      '(filepath fileName path file_path))))
 
+(defun agent-shell--raw-input-command (acp-raw-input)
+  "Return the command display string in ACP-RAW-INPUT, or nil.
+For example, ((command_line . \"ls -la\")) returns \"ls -la\"."
+  ;; Antigravity sends `command_line' rather than `command'.
+  ;; See https://github.com/xenodium/agent-shell/issues/903
+  (agent-shell--tool-call-command-to-string
+   (or (map-elt acp-raw-input 'command)
+       (map-elt acp-raw-input 'command_line))))
+
 (defun agent-shell--tool-call-file-paths (tool-call)
   "Return file paths reported by TOOL-CALL, or nil if unavailable.
 For example, two diffs for \"a.el\" return (\"a.el\" \"a.el\")."
@@ -3448,8 +3457,8 @@ Clears STATE's `:expanded-activity-group'."
                                          (map-nested-elt acp-notification '(params update title)))))
                           (cons :status (map-nested-elt acp-notification '(params update status)))
                           (cons :kind (map-nested-elt acp-notification '(params update kind)))
-                          (cons :command (agent-shell--tool-call-command-to-string
-                                          (map-nested-elt acp-notification '(params update rawInput command))))
+                          (cons :command (agent-shell--raw-input-command
+                                          (map-nested-elt acp-notification '(params update rawInput))))
                           (cons :description (map-nested-elt acp-notification '(params update rawInput description)))
                           (cons :content (map-nested-elt acp-notification '(params update content)))
                           (cons :locations (map-nested-elt acp-notification '(params update locations)))
@@ -3650,8 +3659,8 @@ Clears STATE's `:expanded-activity-group'."
                     (when-let* ((description (agent-shell--tool-call-command-to-string
                                               (map-nested-elt acp-notification '(params update rawInput description)))))
                       (list (cons :description description)))
-                    (when-let* ((command (agent-shell--tool-call-command-to-string
-                                          (map-nested-elt acp-notification '(params update rawInput command)))))
+                    (when-let* ((command (agent-shell--raw-input-command
+                                          (map-nested-elt acp-notification '(params update rawInput)))))
                       (list (cons :command command)))
                     (when-let* ((raw-input (map-nested-elt acp-notification '(params update rawInput))))
                       (list (cons :raw-input raw-input)))
@@ -9923,8 +9932,7 @@ For example:
   => \"```console\\nls -la\\n```\""
   (let* ((title (map-elt tool-call :title))
          (raw-input (map-elt tool-call :raw-input))
-         (command (agent-shell--tool-call-command-to-string
-                   (map-elt raw-input 'command)))
+         (command (agent-shell--raw-input-command raw-input))
          (filepath (agent-shell--raw-input-file-path raw-input))
          ;; Fetch tools (eg. OpenCode's webfetch) put the target URL
          ;; under `url'.  Surface it in full below, since the basename

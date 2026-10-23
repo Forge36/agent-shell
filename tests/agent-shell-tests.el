@@ -7113,6 +7113,16 @@ tense while any member is still unfinished."
     (should (equal "a.el" (agent-shell--raw-input-file-path
                           (list (cons key "a.el")))))))
 
+(ert-deftest agent-shell--raw-input-command-test ()
+  "Read the command under either key and normalize argv vectors."
+  (should (equal "ls -la" (agent-shell--raw-input-command
+                           '((command . "ls -la")))))
+  (should (equal "ls -la" (agent-shell--raw-input-command
+                           '((command_line . "ls -la") (working_dir . "/tmp")))))
+  (should (equal "ls -la" (agent-shell--raw-input-command
+                           '((command . ["ls" "-la"])))))
+  (should-not (agent-shell--raw-input-command '((path . "a.el")))))
+
 (ert-deftest agent-shell--activity-group-edit-file-count-test ()
   "Edit summaries count distinct files and handle missing paths."
   (let ((call '((:kind . "edit") (:status . "completed")
