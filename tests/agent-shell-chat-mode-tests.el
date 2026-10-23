@@ -242,13 +242,6 @@ without an `agent-shell-chat--tag' are left alone."
                     (agent-shell-chat--displayed-substring (point-min) (point-max)))
                    "Claude> hi"))))
 
-(ert-deftest agent-shell-chat-prompt-face-p-test ()
-  "Prompt runs are recognized whether the face is a symbol or a list."
-  (should (agent-shell-chat--prompt-face-p 'comint-highlight-prompt))
-  (should (agent-shell-chat--prompt-face-p '(comint-highlight-prompt comint-highlight-prompt)))
-  (should-not (agent-shell-chat--prompt-face-p 'default))
-  (should-not (agent-shell-chat--prompt-face-p nil)))
-
 (ert-deftest agent-shell-chat-agent-name-test ()
   "The agent label uses `:mode-line-name', falling back to \"Agent\"."
   (agent-shell-chat-mode-tests--with-shell
@@ -1454,18 +1447,6 @@ The overlay starts past the `:extend' background and drops its `line-prefix'."
   (should (agent-shell-chat--extends-bg-p '(agent-shell-chat-mode-tests--panel)))
   (should-not (agent-shell-chat--extends-bg-p 'agent-shell-chat-mode-tests--plain))
   (should-not (agent-shell-chat--extends-bg-p nil)))
-
-(ert-deftest agent-shell-chat-prompt-runs-test ()
-  "`agent-shell-chat--prompt-runs' collects each prompt run in buffer order."
-  (agent-shell-chat-mode-tests--with-shell
-    (agent-shell-chat-mode-tests--prompt "Claude> ")
-    (insert "hello\n")
-    (agent-shell-chat-mode-tests--marker)
-    (insert "hi\n")
-    (agent-shell-chat-mode-tests--prompt "Claude> ")
-    (let ((runs (agent-shell-chat--prompt-runs)))
-      (should (= 2 (length runs)))
-      (should (< (cdr (nth 0 runs)) (car (nth 1 runs)))))))
 
 (ert-deftest agent-shell-chat-label-after-interrupted-turn-test ()
   "A label after an interrupted turn keeps one blank line before it.

@@ -7406,6 +7406,51 @@ A handled notification skips core but still records activity."
           (put-text-property out-start (point) 'field 'output))
         (should-not (agent-shell--live-input-prompt-p prompt))))))
 
+(ert-deftest agent-shell--prompt-face-p-test ()
+  "Prompt runs are recognized whether the face is a symbol or a list."
+  (should (agent-shell--prompt-face-p 'comint-highlight-prompt))
+  (should (agent-shell--prompt-face-p 'agent-shell-prompt))
+  (should (agent-shell--prompt-face-p '(comint-highlight-prompt comint-highlight-prompt)))
+  (should-not (agent-shell--prompt-face-p 'default))
+  (should-not (agent-shell--prompt-face-p nil)))
+
+(ert-deftest agent-shell-prompt-ranges-test ()
+  "`agent-shell-prompt-ranges' finds typed, replayed, steered and live prompts."
+  (with-temp-buffer
+    (let ((marker (propertize "<shell-maker-end-of-prompt>"
+                              'invisible t 'shell-maker--marker t)))
+      ;; Typed at the shell.
+      (insert (propertize "Claude> " 'font-lock-face
+                          '(comint-highlight-prompt comint-highlight-prompt))
+              (propertize "typed" 'font-lock-face 'comint-highlight-input)
+              "\n" marker
+              ;; Quoted marker text without the property is not a boundary.
+              "reply <shell-maker-end-of-prompt>\n\n")
+      ;; Replayed by a restored session.
+      (insert (propertize "Claude> " 'font-lock-face
+                          '(agent-shell-prompt comint-highlight-prompt))
+              (propertize "replayed" 'font-lock-face 'agent-shell-input)
+              marker "\n\n")
+      ;; Steered into a running turn.
+      (insert (propertize "Claude> " 'font-lock-face 'agent-shell-prompt)
+              (propertize "[steer] steered" 'font-lock-face 'agent-shell-input)
+              marker "\n\n")
+      ;; Live, still being typed into.
+      (insert (propertize "Claude> " 'font-lock-face 'comint-highlight-prompt)
+              "draft"))
+    (should (equal (seq-map (lambda (range)
+                              (list (buffer-substring-no-properties
+                                     (map-elt range :prompt-start)
+                                     (map-elt range :prompt-end))
+                                    (buffer-substring-no-properties
+                                     (map-elt range :input-start)
+                                     (map-elt range :input-end))))
+                            (agent-shell-prompt-ranges))
+                   '(("Claude> " "typed\n")
+                     ("Claude> " "replayed")
+                     ("Claude> " "[steer] steered")
+                     ("Claude> " "draft"))))))
+
 (ert-deftest agent-shell--live-input-prompt-p-narrowed-above-prompt-test ()
   "Guard against inverted `text-property-any' bounds while narrowed.
 Regression for session restore inserting the truncated-history note
