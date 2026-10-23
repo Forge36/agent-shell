@@ -8555,6 +8555,42 @@ them.  Without a reset, undo would edit the table instead."
                                                  t)))))))
            '((:prompt-input . nil) (:table-intact . t)))))
 
+(ert-deftest agent-shell--delete-fragment-resets-undo-history-test ()
+  "Undo after a fragment is deleted undoes what was typed at the prompt.
+
+Deleting a fragment above the prompt (a resolved permission request,
+say) pulls the input typed in the meantime up, away from the absolute
+positions its undo entries hold.  Without a reset, undo would edit the
+output above the prompt instead."
+  (should (equal
+           (agent-shell-tests--with-persistent-prompt-shell
+            (lambda ()
+              (buffer-enable-undo)
+              (agent-shell--update-fragment
+               :state agent-shell--state
+               :block-id "agent-message"
+               :body "Some agent output"
+               :create-new t)
+              (agent-shell--update-fragment
+               :state agent-shell--state
+               :block-id "permission"
+               :body "Allow this?"
+               :create-new t)
+              (goto-char (point-max))
+              (insert "draft")
+              (undo-boundary)
+              (agent-shell--delete-fragment :state agent-shell--state
+                                            :block-id "permission")
+              ;; Stands in for the command loop, which boundaries the
+              ;; undo list before running the undo command.
+              (undo-boundary)
+              (undo)
+              (list (cons :prompt-input (agent-shell--prompt-input))
+                    (cons :output-intact (and (string-match-p
+                                               "Some agent output" (buffer-string))
+                                              t)))))
+           '((:prompt-input . nil) (:output-intact . t)))))
+
 (ert-deftest agent-shell-file-display-action-test ()
   "Files open per `agent-shell-file-display-action\'.
 

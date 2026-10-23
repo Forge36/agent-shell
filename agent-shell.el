@@ -5391,7 +5391,12 @@ variable (see makunbound)"))
                  (equal (current-buffer)
                         (map-elt state :buffer)))
       (error "Editing the wrong buffer: %s" (current-buffer)))
-    (agent-shell-ui-delete-fragment :namespace-id (map-elt state :request-count) :block-id block-id :no-undo t)))
+    (let ((input-start (agent-shell--prompt-input-start)))
+      (agent-shell-ui-delete-fragment :namespace-id (map-elt state :request-count) :block-id block-id :no-undo t)
+      ;; A deletion above the prompt pulled any unsubmitted input up, so the
+      ;; undo entries recorded for it point at the shifted text.
+      (unless (equal input-start (agent-shell--prompt-input-start))
+        (agent-shell--reset-undo-history)))))
 
 (cl-defun agent-shell--collapse-fragment-group (&key state namespace-id block-id)
   "Collapse group header BLOCK-ID under NAMESPACE-ID in STATE's buffers.
