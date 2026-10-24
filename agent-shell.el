@@ -3425,7 +3425,8 @@ Clears STATE's `:expanded-activity-group'."
               :file-path agent-shell--transcript-file)
              (agent-shell--emit-event
               :event 'agent-message-chunk
-              :data (list (cons :text-chunk (map-nested-elt acp-notification '(params update content text)))))
+              :data (list (cons :text-chunk (map-nested-elt acp-notification '(params update content text)))
+                          (cons :meta (map-nested-elt acp-notification '(params update _meta)))))
              (agent-shell--update-streamed-fragment
               :state state
               ;; Out of turn, key under a dedicated namespace so the
@@ -3470,7 +3471,8 @@ Clears STATE's `:expanded-activity-group'."
            (agent-shell--emit-event
             :event 'tool-call-update
             :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
-                        (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-notification '(params update toolCallId)))))))
+                        (cons :tool-call (map-nested-elt state (list :tool-calls (map-nested-elt acp-notification '(params update toolCallId)))))
+                        (cons :meta (map-nested-elt acp-notification '(params update _meta)))))
            (let ((tool-call-labels (agent-shell-make-tool-call-label
                                     state (map-nested-elt acp-notification '(params update toolCallId))))
                  (group-id (agent-shell--activity-group-id
@@ -3692,7 +3694,8 @@ Clears STATE's `:expanded-activity-group'."
            (agent-shell--emit-event
             :event 'tool-call-update
             :data (list (cons :tool-call-id (map-nested-elt acp-notification '(params update toolCallId)))
-                        (cons :tool-call (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)))))))
+                        (cons :tool-call (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)))))
+                        (cons :meta (map-nested-elt acp-notification '(params update _meta)))))
            (let* ((diffs (map-nested-elt state `(:tool-calls ,(map-nested-elt acp-notification '(params update toolCallId)) :diffs)))
                   (output (concat
                            "\n\n"
@@ -3821,7 +3824,8 @@ Clears STATE's `:expanded-activity-group'."
            (agent-shell--update-header-and-mode-line)
            (agent-shell--emit-event
             :event 'config-option-update
-            :data (list (cons :config-options (agent-shell--config-options state))))
+            :data (list (cons :config-options (agent-shell--config-options state))
+                        (cons :meta (map-nested-elt acp-notification '(params update _meta)))))
            ;; Note: No need to set :last-entry-type as no text was inserted.
            nil)
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "usage_update")
@@ -3831,6 +3835,10 @@ Clears STATE's `:expanded-activity-group'."
             :acp-update (map-nested-elt acp-notification '(params update)))
            ;; Update header to reflect new context usage indicator
            (agent-shell--update-header-and-mode-line)
+           (agent-shell--emit-event
+            :event 'usage-update
+            :data (list (cons :usage (map-elt state :usage))
+                        (cons :meta (map-nested-elt acp-notification '(params update _meta)))))
            ;; Note: This is session-level state, no need to set :last-entry-type
            nil)
           ((equal (map-nested-elt acp-notification '(params update sessionUpdate)) "session_push_end")
@@ -3928,7 +3936,8 @@ Clears STATE's `:expanded-activity-group'."
                  (agent-shell-jump-to-latest-permission-button-row)))
              (let ((data (list (cons :request-id (map-elt acp-request 'id))
                                (cons :tool-call-id tool-call-id)
-                               (cons :tool-call (map-nested-elt state (list :tool-calls tool-call-id))))))
+                               (cons :tool-call (map-nested-elt state (list :tool-calls tool-call-id)))
+                               (cons :meta (map-nested-elt acp-request '(params _meta))))))
                (agent-shell--emit-event
                 :event 'permission-request
                 :data data)
@@ -4093,7 +4102,8 @@ function before returning."
         (agent-shell--emit-event
          :event 'file-write
          :data (list (cons :path path)
-                     (cons :content content)))
+                     (cons :content content)
+                     (cons :meta (map-nested-elt acp-request '(params _meta)))))
         (acp-send-response
          :client (map-elt state :client)
          :response (acp-make-fs-write-text-file-response
@@ -6961,24 +6971,32 @@ Initialization events (emitted in order):
                           initialization, see `agent-shell-initialized-p')
   `prompt-ready'        - Shell prompt displayed and ready for input
 
+Session events emitted for an ACP message also carry :meta in :data:
+that message's `_meta' as received, or nil.  It is agent-specific and
+not interpreted by the shell.  Like the rest of :data, it belongs to the
+triggering message only (for `tool-call-update', the latest update
+rather than the whole tool call).
+
 Session events:
   `tool-call-update'      - Tool call started or updated
-    :data contains :tool-call-id and :tool-call
+    :data contains :tool-call-id, :tool-call and :meta
   `config-option-update'  - ACP config option(s) changed
-    :data contains :config-options (normalized list)
+    :data contains :config-options (normalized list) and :meta
+  `usage-update'          - Agent reported context window or cost usage
+    :data contains :usage and :meta
   `file-write'            - File written via fs/write_text_file
-    :data contains :path and :content
+    :data contains :path, :content and :meta
   `permission-request'    - Permission prompt displayed to user
-    :data contains :request-id, :tool-call-id, :tool-call
+    :data contains :request-id, :tool-call-id, :tool-call and :meta
   `permission-response'   - Permission response sent
     :data contains :request-id, :tool-call-id, :option-id, :cancelled
   `agent-message-chunk'   - Agent streamed a chunk of message text
     :data contains :text-chunk (the raw text the agent emitted, nil for a
-    non-text block such as an image).  Emitted once per streamed chunk, so
-    it may fire many times per turn; the shell neither renders nor
-    accumulates the text.
+    non-text block such as an image) and :meta.  Emitted once per streamed
+    chunk, so it may fire many times per turn; the shell neither renders
+    nor accumulates the text.
   `turn-complete'         - Agent turn finished and prompt ready for input
-    :data contains :stop-reason and :usage
+    :data contains :stop-reason, :usage and :meta
   `session-title-changed' - Session title updated
     :data contains :title
   `session-restored'      - Reloaded session fully replayed and settled
@@ -7010,6 +7028,16 @@ Example usage:
    :on-event (lambda (event)
                (let ((data (map-elt event :data)))
                  (message \"wrote: %s\" (map-elt data :path)))))
+
+  ;; Read usage and agent-specific `_meta' (Claude's rate limit)
+  (agent-shell-subscribe-to
+   :shell-buffer shell-buffer
+   :event \\='usage-update
+   :on-event (lambda (event)
+               (message \"context: %s/%s rate limit: %S\"
+                        (map-nested-elt event \\='(:data :usage :context-used))
+                        (map-nested-elt event \\='(:data :usage :context-size))
+                        (map-nested-elt event \\='(:data :meta _claude/rateLimit)))))
 
   ;; Unsubscribe
   (let ((token (agent-shell-subscribe-to
@@ -7384,7 +7412,8 @@ on error."
                  (agent-shell--emit-event
                   :event 'config-option-update
                   :data (list (cons :config-options
-                                    (agent-shell--config-options (agent-shell--state)))))
+                                    (agent-shell--config-options (agent-shell--state)))
+                              (cons :meta (map-elt acp-response '_meta))))
                  (when on-success
                    (funcall on-success)))
    :on-failure (or on-failure
@@ -9353,7 +9382,8 @@ reads the buffer's prompt capabilities."
                      (agent-shell--finish-output :config shell-maker--config
                                                 :success t)
                      (let ((data (list (cons :stop-reason (map-elt acp-response 'stopReason))
-                                       (cons :usage (map-elt (agent-shell--state) :usage)))))
+                                       (cons :usage (map-elt (agent-shell--state) :usage))
+                                       (cons :meta (map-elt acp-response '_meta)))))
                        (agent-shell--emit-event
                         :event 'turn-complete
                         :data data)

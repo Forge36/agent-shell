@@ -2291,6 +2291,56 @@ fast: requesting on... done"))
     (should (equal (map-elt (car (map-elt state :config-options)) :current-value)
                    "code"))))
 
+(ert-deftest agent-shell--usage-update-emits-event-test ()
+  "Test usage_update emits `usage-update' with :usage and raw :meta."
+  (let ((state (list (cons :usage (list (cons :context-used 0)
+                                        (cons :context-size 0)))
+                     (cons :last-activity-time nil)))
+        (emitted nil))
+    (cl-letf (((symbol-function 'agent-shell--update-header-and-mode-line)
+               #'ignore)
+              ((symbol-function 'agent-shell--emit-event)
+               (lambda (&rest args)
+                 (push args emitted))))
+      (agent-shell--on-notification
+       :state state
+       :acp-notification '((method . "session/update")
+                           (params
+                            (update
+                             (sessionUpdate . "usage_update")
+                             (used . 1000)
+                             (size . 200000)
+                             (_meta (_claude/rateLimit (status . "allowed"))))))))
+    (should (equal (plist-get (car emitted) :event) 'usage-update))
+    (should (equal (map-nested-elt (plist-get (car emitted) :data) '(:usage :context-used))
+                   1000))
+    (should (equal (map-elt (plist-get (car emitted) :data) :meta)
+                   '((_claude/rateLimit (status . "allowed")))))))
+
+(ert-deftest agent-shell--config-option-update-emits-meta-test ()
+  "Test config_option_update passes the notification's `_meta' as :meta."
+  (let ((state (list (cons :session (list (cons :id "session-1")
+                                          (cons :config-options nil)))
+                     (cons :config-options nil)
+                     (cons :last-activity-time nil)))
+        (emitted nil))
+    (cl-letf (((symbol-function 'agent-shell--update-header-and-mode-line)
+               #'ignore)
+              ((symbol-function 'agent-shell--emit-event)
+               (lambda (&rest args)
+                 (push args emitted))))
+      (agent-shell--on-notification
+       :state state
+       :acp-notification '((method . "session/update")
+                           (params
+                            (update
+                             (sessionUpdate . "config_option_update")
+                             (configOptions . [])
+                             (_meta (foo . "bar")))))))
+    (should (equal (plist-get (car emitted) :event) 'config-option-update))
+    (should (equal (map-elt (plist-get (car emitted) :data) :meta)
+                   '((foo . "bar"))))))
+
 (ert-deftest agent-shell--config-option-set-model-id-config-option-test ()
   "Test model changes prefer session config options."
   (let* ((initial-config-options [((id . "model")
